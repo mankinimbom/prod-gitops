@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: prod-apps
+  namespace: argocd
+spec:
+  generators:
+  - list:
+      elements:
+      - name: backend
+        path: apps/backend/overlays/prod
+      - name: frontend
+        path: apps/frontend/overlays/prod
+  template:
+    metadata:
+      name: '{{name}}'
+    spec:
+      project: prod
+      source:
+        repoURL: https://github.com/mankinimbom/prod-gitops.git
+        targetRevision: main
+        path: '{{path}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: prod
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true

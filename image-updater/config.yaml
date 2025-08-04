@@ -1,0 +1,17 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ImageUpdateAutomation
+metadata:
+  name: image-updater
+  namespace: argocd
+spec:
+  interval: 1m
+  sourceRef:
+    kind: GitRepository
+    name: prod-gitops
+  update:
+    strategy: Setters
+  git:
+    commit:
+      author:
+        name: CI Bot
+        email: ci-bot@example.com
