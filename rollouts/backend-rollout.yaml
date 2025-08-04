@@ -2,6 +2,7 @@ apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
   name: backend
+  namespace: prod
 spec:
   replicas: 2
   selector:
@@ -12,6 +13,11 @@ spec:
       labels:
         app: backend
     spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
       containers:
       - name: backend
         image: ghcr.io/mankinimbom/backend:1.0.0
@@ -36,6 +42,7 @@ spec:
           requests:
             cpu: "250m"
             memory: "256Mi"
+            ephemeral-storage: "1Gi"
         envFrom:
         - secretRef:
             name: backend-secrets

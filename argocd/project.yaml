@@ -9,12 +9,12 @@ metadata:
 spec:
   description: Production project for all prod workloads
   sourceRepos:
-    - 'https://github.com/mankinimbom/prod-gitops.git'
-    - 'https://github.com/mankinimbom/backend.git'
-    - 'https://github.com/mankinimbom/frontend.git'
+  - 'https://github.com/mankinimbom/prod-gitops.git'
+  - 'https://github.com/mankinimbom/backend.git'
+  - 'https://github.com/mankinimbom/frontend.git'
   destinations:
-    - namespace: prod
-      server: https://kubernetes.default.svc
+  - namespace: prod
+    server: https://kubernetes.default.svc
   clusterResourceWhitelist:
-    - group: '*'
-      kind: '*'
+  - group: '*'
+    kind: '*'

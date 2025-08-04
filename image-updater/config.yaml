@@ -1,17 +1,22 @@
-apiVersion: argoproj.io/v1alpha1
-kind: ImageUpdateAutomation
+apiVersion: v1
+kind: ConfigMap
 metadata:
-  name: image-updater
+  name: argocd-image-updater-config
   namespace: argocd
-spec:
-  interval: 1m
-  sourceRef:
-    kind: GitRepository
-    name: prod-gitops
-  update:
-    strategy: Setters
-  git:
-    commit:
-      author:
-        name: CI Bot
-        email: ci-bot@example.com
+  labels:
+    app.kubernetes.io/name: argocd-image-updater
+    app.kubernetes.io/part-of: argocd
+data:
+  applications: |
+    - name: prod-backend
+      image: ghcr.io/mankinimbom/backend:1.0.0
+      update.strategy: latest
+    - name: prod-frontend
+      image: ghcr.io/mankinimbom/frontend:1.0.0
+      update.strategy: latest
+  registries.conf: |
+    registries:
+    - name: GitHub Container Registry
+      prefix: ghcr.io
+      api_url: https://ghcr.io
+      default: true

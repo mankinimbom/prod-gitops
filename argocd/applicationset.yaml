@@ -8,16 +8,17 @@ metadata:
     environment: production
 spec:
   generators:
-    - git:
-        repoURL: https://github.com/mankinimbom/prod-gitops.git
-        revision: main
-        directories:
-          - path: apps/*/overlays/prod
+  - git:
+      repoURL: https://github.com/mankinimbom/prod-gitops.git
+      revision: main
+      directories:
+      - path: apps/*/overlays/prod
   template:
     metadata:
-      name: '{{path.basename}}'
+      name: 'prod-{{path.basename}}'
       labels:
         team: '{{path.basename}}-team'
+        environment: production
     spec:
       project: prod
       source:
