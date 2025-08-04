@@ -3,12 +3,18 @@ kind: AppProject
 metadata:
   name: prod
   namespace: argocd
+  annotations:
+    owner: "devops-team"
+    description: "Production applications managed by ArgoCD"
 spec:
-  destinations:
-  - namespace: prod
-    server: https://kubernetes.default.svc
+  description: Production project for all prod workloads
   sourceRepos:
-  - 'https://github.com/mankinimbom/prod-gitops.git'
+    - 'https://github.com/mankinimbom/prod-gitops.git'
+    - 'https://github.com/mankinimbom/backend.git'
+    - 'https://github.com/mankinimbom/frontend.git'
+  destinations:
+    - namespace: prod
+      server: https://kubernetes.default.svc
   clusterResourceWhitelist:
-  - group: '*'
-    kind: '*'
+    - group: '*'
+      kind: '*'

@@ -3,17 +3,21 @@ kind: ApplicationSet
 metadata:
   name: prod-apps
   namespace: argocd
+  labels:
+    owner: devops-team
+    environment: production
 spec:
   generators:
-  - list:
-      elements:
-      - name: backend
-        path: apps/backend/overlays/prod
-      - name: frontend
-        path: apps/frontend/overlays/prod
+    - git:
+        repoURL: https://github.com/mankinimbom/prod-gitops.git
+        revision: main
+        directories:
+          - path: apps/*/overlays/prod
   template:
     metadata:
-      name: '{{name}}'
+      name: '{{path.basename}}'
+      labels:
+        team: '{{path.basename}}-team'
     spec:
       project: prod
       source:
@@ -27,3 +31,9 @@ spec:
         automated:
           prune: true
           selfHeal: true
+        retry:
+          limit: 3
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
