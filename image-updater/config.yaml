@@ -6,17 +6,45 @@ metadata:
   labels:
     app.kubernetes.io/name: argocd-image-updater
     app.kubernetes.io/part-of: argocd
+    app.kubernetes.io/component: image-updater
 data:
+  log.level: info
   applications: |
     - name: prod-backend
-      image: ghcr.io/mankinimbom/backend:1.0.0
-      update.strategy: latest
+      image-list:
+        - name: backend
+          image: ghcr.io/mankinimbom/backend
+          platforms: linux/amd64
+          tag: "1.0.0"
+          update-strategy: semver
+          semver-constraint: "~1.0"
+          allow-tags: ^v[0-9]+\.[0-9]+\.[0-9]+$
+      write-back-method: git
+      git-branch: main
+      git-commit-user: argocd-image-updater
+      git-commit-email: argocd-image-updater@example.com
+      git-commit-message: "chore: update backend image to {{.NewTag}}"
     - name: prod-frontend
-      image: ghcr.io/mankinimbom/frontend:1.0.0
-      update.strategy: latest
+      image-list:
+        - name: frontend
+          image: ghcr.io/mankinimbom/frontend
+          platforms: linux/amd64
+          tag: "1.0.0"
+          update-strategy: semver
+          semver-constraint: "~1.0"
+          allow-tags: ^v[0-9]+\.[0-9]+\.[0-9]+$
+      write-back-method: git
+      git-branch: main
+      git-commit-user: argocd-image-updater
+      git-commit-email: argocd-image-updater@example.com
+      git-commit-message: "chore: update frontend image to {{.NewTag}}"
   registries.conf: |
     registries:
     - name: GitHub Container Registry
       prefix: ghcr.io
-      api_url: https://ghcr.io
+      api_url: https://ghcr.io/v2
+      credentials: secret:argocd/github-registry-creds#token
       default: true
+      insecure: false
+      tagSortMode: semver
+      defaultNS: mankinimbom

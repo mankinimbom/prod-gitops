@@ -8,3 +8,8 @@ metadata:
 
 resources:
 - prod-namespace.yaml
+- network-policy.yaml
+
+commonLabels:
+  environment: production
+  managed-by: argocd

@@ -6,7 +6,11 @@ metadata:
   labels:
     owner: devops-team
     environment: production
+  annotations:
+    argocd-image-updater.argoproj.io/image-list: backend=ghcr.io/mankinimbom/backend,frontend=ghcr.io/mankinimbom/frontend
 spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
   generators:
   - git:
       repoURL: https://github.com/mankinimbom/prod-gitops.git
@@ -15,16 +19,20 @@ spec:
       - path: apps/*/overlays/prod
   template:
     metadata:
-      name: 'prod-{{path.basename}}'
+      name: 'prod-{{.path.basename}}'
       labels:
-        team: '{{path.basename}}-team'
+        team: '{{.path.basename}}-team'
         environment: production
+        app: '{{.path.basename}}'
+      annotations:
+        argocd.argoproj.io/sync-wave: "1"
+        notifications.argoproj.io/subscribe.on-sync-succeeded.slack: prod-alerts
     spec:
       project: prod
       source:
         repoURL: https://github.com/mankinimbom/prod-gitops.git
         targetRevision: main
-        path: '{{path}}'
+        path: '{{.path}}'
       destination:
         server: https://kubernetes.default.svc
         namespace: prod
@@ -32,9 +40,14 @@ spec:
         automated:
           prune: true
           selfHeal: true
+        syncOptions:
+        - CreateNamespace=true
+        - PrunePropagationPolicy=foreground
+        - PruneLast=true
         retry:
-          limit: 3
+          limit: 5
           backoff:
             duration: 5s
             factor: 2
             maxDuration: 3m
+      revisionHistoryLimit: 3

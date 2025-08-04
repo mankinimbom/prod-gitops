@@ -1,10 +1,14 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Rollout
 metadata:
-  name: backend
+  name: backend-rollout
   namespace: prod
+  labels:
+    app: backend
+    tier: api
+    component: rollout
 spec:
-  replicas: 2
+  replicas: 3
   selector:
     matchLabels:
       app: backend
@@ -12,45 +16,104 @@ spec:
     metadata:
       labels:
         app: backend
+        tier: api
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
     spec:
+      serviceAccountName: backend-sa
       automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
         fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: backend
         image: ghcr.io/mankinimbom/backend:1.0.0
+        imagePullPolicy: Always
         ports:
-        - containerPort: 3000
+        - name: http
+          containerPort: 3000
+          protocol: TCP
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 1000
+          capabilities:
+            drop:
+            - ALL
         readinessProbe:
           httpGet:
             path: /healthz
             port: 3000
+            scheme: HTTP
           initialDelaySeconds: 5
           periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
         livenessProbe:
           httpGet:
             path: /healthz
             port: 3000
+            scheme: HTTP
           initialDelaySeconds: 10
           periodSeconds: 20
+          timeoutSeconds: 5
+          failureThreshold: 3
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: 3000
+            scheme: HTTP
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 5
+          failureThreshold: 30
         resources:
           limits:
             cpu: "500m"
             memory: "512Mi"
+            ephemeral-storage: "2Gi"
           requests:
             cpu: "250m"
             memory: "256Mi"
             ephemeral-storage: "1Gi"
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "3000"
         envFrom:
         - secretRef:
             name: backend-secrets
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: var-cache
+          mountPath: /var/cache
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: var-cache
+        emptyDir: {}
   strategy:
     canary:
+      maxSurge: "25%"
+      maxUnavailable: 0
       steps:
       - setWeight: 20
       - pause: {duration: 60}
-      - setWeight: 50
-      - pause: {duration: 120}
+      - setWeight: 40
+      - pause: {duration: 60}
+      - setWeight: 60
+      - pause: {duration: 60}
+      - setWeight: 80
+      - pause: {duration: 60}
       - setWeight: 100
+  revisionHistoryLimit: 5

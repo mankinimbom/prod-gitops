@@ -2,18 +2,18 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 metadata:
-  name: backend-base
+  name: argocd-root
   annotations:
     config.kubernetes.io/local-config: "true"
 
 resources:
-- serviceaccount.yaml
-- deployment.yaml
-- service.yaml
+- project.yaml
+- app-of-apps.yaml
+- applicationset.yaml
 
 commonLabels:
-  app: backend
-  tier: api
-  version: v1
+  environment: production
+  managed-by: argocd
+  component: argocd
 
-namespace: prod
+namespace: argocd

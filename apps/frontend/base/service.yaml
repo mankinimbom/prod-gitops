@@ -3,9 +3,19 @@ kind: Service
 metadata:
   name: frontend
   namespace: prod
+  labels:
+    app: frontend
+    tier: web
+    component: service
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
 spec:
+  type: ClusterIP
   selector:
     app: frontend
   ports:
-  - port: 80
+  - name: http
+    port: 80
     targetPort: 80
+    protocol: TCP
+  sessionAffinity: None

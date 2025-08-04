@@ -7,6 +7,7 @@ metadata:
     config.kubernetes.io/local-config: "true"
 
 resources:
+- serviceaccount.yaml
 - deployment.yaml
 - service.yaml
 - nginx-config.yaml

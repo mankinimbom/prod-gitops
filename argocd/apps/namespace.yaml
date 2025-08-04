@@ -6,6 +6,11 @@ metadata:
   labels:
     app: namespace
     environment: production
+    component: infrastructure
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+  finalizers:
+  - resources-finalizer.argocd.argoproj.io
 spec:
   project: prod
   source:
@@ -22,3 +27,11 @@ spec:
     syncOptions:
     - CreateNamespace=true
     - ServerSideApply=true
+    - PrunePropagationPolicy=foreground
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  revisionHistoryLimit: 3
