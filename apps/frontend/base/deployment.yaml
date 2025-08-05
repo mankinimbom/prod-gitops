@@ -25,7 +25,7 @@ spec:
         version: v1
       annotations:
         prometheus.io/scrape: "true"
-        prometheus.io/port: "80"
+        prometheus.io/port: "8080"
         prometheus.io/path: "/metrics"
     spec:
       serviceAccountName: frontend-sa
@@ -42,7 +42,7 @@ spec:
         imagePullPolicy: Always
         ports:
         - name: http
-          containerPort: 80
+          containerPort: 8080
           protocol: TCP
         securityContext:
           allowPrivilegeEscalation: false
@@ -54,8 +54,8 @@ spec:
             - ALL
         readinessProbe:
           httpGet:
-            path: /
-            port: 80
+            path: /health
+            port: 8080
             scheme: HTTP
           initialDelaySeconds: 5
           periodSeconds: 10
@@ -64,8 +64,8 @@ spec:
           successThreshold: 1
         livenessProbe:
           httpGet:
-            path: /
-            port: 80
+            path: /health
+            port: 8080
             scheme: HTTP
           initialDelaySeconds: 10
           periodSeconds: 20
@@ -73,8 +73,8 @@ spec:
           failureThreshold: 3
         startupProbe:
           httpGet:
-            path: /
-            port: 80
+            path: /health
+            port: 8080
             scheme: HTTP
           initialDelaySeconds: 5
           periodSeconds: 5
@@ -93,14 +93,24 @@ spec:
         - name: nginx-config
           mountPath: /etc/nginx/conf.d
           readOnly: true
+        - name: nginx-main-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
         - name: tmp
           mountPath: /tmp
         - name: var-cache
           mountPath: /var/cache/nginx
         - name: var-run
           mountPath: /var/run
+        - name: var-log
+          mountPath: /var/log/nginx
       volumes:
       - name: nginx-config
+        configMap:
+          name: nginx-config
+          defaultMode: 0644
+      - name: nginx-main-config
         configMap:
           name: nginx-config
           defaultMode: 0644
@@ -109,4 +119,6 @@ spec:
       - name: var-cache
         emptyDir: {}
       - name: var-run
+        emptyDir: {}
+      - name: var-log
         emptyDir: {}
