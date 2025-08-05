@@ -93,10 +93,6 @@ spec:
         - name: nginx-config
           mountPath: /etc/nginx/conf.d
           readOnly: true
-        - name: nginx-main-config
-          mountPath: /etc/nginx/nginx.conf
-          subPath: nginx.conf
-          readOnly: true
         - name: tmp
           mountPath: /tmp
         - name: var-cache
@@ -107,10 +103,6 @@ spec:
           mountPath: /var/log/nginx
       volumes:
       - name: nginx-config
-        configMap:
-          name: nginx-config
-          defaultMode: 0644
-      - name: nginx-main-config
         configMap:
           name: nginx-config
           defaultMode: 0644
