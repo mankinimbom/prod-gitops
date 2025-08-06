@@ -1,0 +1,180 @@
+# Port.io Kubernetes Exporter Values
+# This file customizes the port-k8s-exporter Helm chart deployment
+
+# Port.io API Configuration
+secret:
+  secrets:
+    portClientId: "57qkRMZxmGcfVKfipr2to8pBMII77FYK"
+    portClientSecret: "n0eBOFw6SVO5nDYUAcM56Dk6jJKpeb11ePgzGC8O5FS0J4YrkplXrM1VPR7Fk6wN"
+
+portBaseUrl: "https://api.port.io"
+stateKey: "port-k8s-exporter"
+
+# Event listener configuration
+eventListener:
+  type: "POLLING"
+
+# Extra environment variables
+extraEnv:
+  - name: "CLUSTER_NAME"
+    value: "production-cluster"
+  - name: "INTEGRATION_TYPE"
+    value: "kubernetes"
+  - name: "LOG_LEVEL"
+    value: "INFO"
+
+# Resource configuration
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Node selector and tolerations
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# RBAC
+rbac:
+  create: true
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+
+# Security context
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+
+# Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+# Monitoring and health checks
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: 8080
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 5
+
+# Port.io specific configurations
+port:
+  # Custom blueprints and mappings
+  config: |
+    resources:
+      # Kubernetes core resources
+      - kind: v1/Namespace
+        selector:
+          query: '.metadata.name | startswith("kube-") | not'
+        port:
+          entity:
+            mappings:
+              identifier: '.metadata.name'
+              title: '.metadata.name'
+              blueprint: '"namespace"'
+              properties:
+                creationTimestamp: '.metadata.creationTimestamp'
+                labels: '.metadata.labels'
+                
+      - kind: v1/Pod
+        selector:
+          query: '.metadata.labels["app.kubernetes.io/name"] != null'
+        port:
+          entity:
+            mappings:
+              identifier: '.metadata.name + "-" + .metadata.namespace'
+              title: '.metadata.name'
+              blueprint: '"microservice"'
+              properties:
+                namespace: '.metadata.namespace'
+                image: '.spec.containers[0].image'
+                phase: '.status.phase'
+                startTime: '.status.startTime'
+                labels: '.metadata.labels'
+              relations:
+                environment: '.metadata.namespace'
+                
+      - kind: apps/v1/Deployment
+        selector:
+          query: 'true'
+        port:
+          entity:
+            mappings:
+              identifier: '.metadata.name + "-" + .metadata.namespace'
+              title: '.metadata.name'
+              blueprint: '"deployment"'
+              properties:
+                namespace: '.metadata.namespace'
+                replicas: '.spec.replicas'
+                availableReplicas: '.status.availableReplicas // 0'
+                strategy: '.spec.strategy.type'
+                labels: '.metadata.labels'
+              relations:
+                environment: '.metadata.namespace'
+                
+      - kind: v1/Service
+        selector:
+          query: 'true'
+        port:
+          entity:
+            mappings:
+              identifier: '.metadata.name + "-" + .metadata.namespace'
+              title: '.metadata.name'
+              blueprint: '"service"'
+              properties:
+                namespace: '.metadata.namespace'
+                type: '.spec.type'
+                ports: '.spec.ports'
+                labels: '.metadata.labels'
+              relations:
+                environment: '.metadata.namespace'
+
+# Integration settings
+integration:
+  identifier: "k8s-exporter"
+  type: "kubernetes"
+  
+# Deployment strategy
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 1
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 8080
+
+# Ingress (disabled by default)
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []

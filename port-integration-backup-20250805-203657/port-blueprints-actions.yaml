@@ -1,0 +1,423 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: port-blueprints
+  namespace: port-system
+data:
+  # Microservice Blueprint - defines the structure for new services
+  microservice-blueprint.json: |
+    {
+      "identifier": "microservice",
+      "title": "Microservice",
+      "icon": "Service",
+      "schema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Service Name",
+            "pattern": "^[a-z0-9-]+$",
+            "maxLength": 63
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "team": {
+            "type": "string",
+            "title": "Owning Team",
+            "enum": ["backend", "frontend", "platform", "data"]
+          },
+          "language": {
+            "type": "string",
+            "title": "Programming Language",
+            "enum": ["java", "python", "nodejs", "go", "dotnet"]
+          },
+          "framework": {
+            "type": "string",
+            "title": "Framework",
+            "enum": ["spring-boot", "fastapi", "express", "gin", "aspnet"]
+          },
+          "port": {
+            "type": "number",
+            "title": "Service Port",
+            "minimum": 3000,
+            "maximum": 9999,
+            "default": 8080
+          },
+          "cpu_request": {
+            "type": "string",
+            "title": "CPU Request",
+            "enum": ["100m", "200m", "500m", "1000m"],
+            "default": "200m"
+          },
+          "memory_request": {
+            "type": "string",
+            "title": "Memory Request",
+            "enum": ["128Mi", "256Mi", "512Mi", "1Gi"],
+            "default": "256Mi"
+          },
+          "replicas": {
+            "type": "number",
+            "title": "Initial Replicas",
+            "minimum": 1,
+            "maximum": 10,
+            "default": 2
+          },
+          "database": {
+            "type": "boolean",
+            "title": "Requires Database",
+            "default": false
+          },
+          "redis": {
+            "type": "boolean",
+            "title": "Requires Redis",
+            "default": false
+          },
+          "public": {
+            "type": "boolean",
+            "title": "Public Service (Ingress)",
+            "default": false
+          }
+        },
+        "required": ["name", "team", "language", "framework"]
+      }
+    }
+
+  # Environment Blueprint
+  environment-blueprint.json: |
+    {
+      "identifier": "environment",
+      "title": "Environment",
+      "icon": "Environment",
+      "schema": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Environment Name",
+            "enum": ["dev", "staging", "prod"],
+            "enumColors": {
+              "dev": "lightGray",
+              "staging": "bronze",
+              "prod": "red"
+            }
+          },
+          "cluster": {
+            "type": "string",
+            "title": "Kubernetes Cluster",
+            "enum": ["dev-cluster", "staging-cluster", "prod-cluster"]
+          },
+          "namespace": {
+            "type": "string",
+            "title": "Kubernetes Namespace"
+          },
+          "auto_sync": {
+            "type": "boolean",
+            "title": "Auto Sync Enabled",
+            "default": true
+          }
+        },
+        "required": ["name", "cluster", "namespace"]
+      }
+    }
+
+  # Deployment Blueprint
+  deployment-blueprint.json: |
+    {
+      "identifier": "deployment",
+      "title": "Deployment",
+      "icon": "Deployment",
+      "schema": {
+        "properties": {
+          "service": {
+            "type": "string",
+            "title": "Service Name",
+            "format": "entity",
+            "blueprint": "microservice"
+          },
+          "environment": {
+            "type": "string",
+            "title": "Target Environment",
+            "format": "entity",
+            "blueprint": "environment"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version/Tag",
+            "pattern": "^v?\\d+\\.\\d+\\.\\d+.*$"
+          },
+          "image": {
+            "type": "string",
+            "title": "Container Image"
+          },
+          "status": {
+            "type": "string",
+            "title": "Deployment Status",
+            "enum": ["Healthy", "Progressing", "Degraded", "Suspended"],
+            "enumColors": {
+              "Healthy": "green",
+              "Progressing": "blue",
+              "Degraded": "red",
+              "Suspended": "darkGray"
+            }
+          },
+          "sync_status": {
+            "type": "string",
+            "title": "Sync Status",
+            "enum": ["Synced", "OutOfSync", "Unknown"],
+            "enumColors": {
+              "Synced": "green",
+              "OutOfSync": "red",
+              "Unknown": "lightGray"
+            }
+          },
+          "replicas": {
+            "type": "number",
+            "title": "Current Replicas"
+          },
+          "ready_replicas": {
+            "type": "number",
+            "title": "Ready Replicas"
+          }
+        },
+        "required": ["service", "environment", "version", "image"]
+      },
+      "relations": {
+        "service": {
+          "target": "microservice",
+          "required": true,
+          "many": false
+        },
+        "environment": {
+          "target": "environment",
+          "required": true,
+          "many": false
+        }
+      }
+    }
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: port-actions
+  namespace: port-system
+data:
+  # Create New Microservice Action
+  create-microservice-action.json: |
+    {
+      "identifier": "create_microservice",
+      "title": "Create New Microservice",
+      "icon": "Microservice",
+      "trigger": {
+        "type": "self-service",
+        "operation": "CREATE",
+        "userInputs": {
+          "properties": {
+            "name": {
+              "type": "string",
+              "title": "Service Name"
+            },
+            "team": {
+              "type": "string",
+              "title": "Team"
+            },
+            "language": {
+              "type": "string", 
+              "title": "Language"
+            },
+            "framework": {
+              "type": "string",
+              "title": "Framework"
+            },
+            "template": {
+              "type": "string",
+              "title": "Template",
+              "enum": ["basic", "api-service", "worker-service", "web-app"],
+              "default": "basic"
+            }
+          },
+          "required": ["name", "team", "language", "framework"]
+        }
+      },
+      "invocationMethod": {
+        "type": "WEBHOOK",
+        "url": "http://port-gitops-controller.port-system.svc.cluster.local:8080/webhooks/create-microservice"
+      },
+      "requiredApproval": false
+    }
+
+  # Deploy to Environment Action
+  deploy-to-environment-action.json: |
+    {
+      "identifier": "deploy_to_environment", 
+      "title": "Deploy to Environment",
+      "icon": "Deploy",
+      "trigger": {
+        "type": "self-service",
+        "operation": "CREATE",
+        "blueprintIdentifier": "deployment",
+        "userInputs": {
+          "properties": {
+            "service": {
+              "type": "string",
+              "blueprint": "microservice",
+              "format": "entity",
+              "title": "Service"
+            },
+            "environment": {
+              "type": "string",
+              "blueprint": "environment", 
+              "format": "entity",
+              "title": "Target Environment"
+            },
+            "version": {
+              "type": "string",
+              "title": "Version to Deploy",
+              "pattern": "^v?\\d+\\.\\d+\\.\\d+.*$"
+            },
+            "auto_sync": {
+              "type": "boolean",
+              "title": "Enable Auto Sync",
+              "default": true
+            }
+          },
+          "required": ["service", "environment", "version"]
+        }
+      },
+      "invocationMethod": {
+        "type": "WEBHOOK",
+        "url": "http://port-gitops-controller.port-system.svc.cluster.local:8080/webhooks/deploy"
+      },
+      "requiredApproval": {
+        "type": "manual",
+        "approvers": {
+          "users": [],
+          "teams": ["platform-team"],
+          "ownersOfEntity": "service"
+        }
+      },
+      "approvalNotification": {
+        "type": "email"
+      }
+    }
+
+  # Promote Between Environments Action
+  promote-action.json: |
+    {
+      "identifier": "promote_deployment",
+      "title": "Promote Between Environments", 
+      "icon": "Promote",
+      "trigger": {
+        "type": "self-service",
+        "operation": "DAY-2",
+        "blueprintIdentifier": "deployment",
+        "userInputs": {
+          "properties": {
+            "target_environment": {
+              "type": "string",
+              "title": "Promote To Environment",
+              "enum": ["staging", "prod"],
+              "enumColors": {
+                "staging": "bronze",
+                "prod": "red"
+              }
+            },
+            "run_tests": {
+              "type": "boolean",
+              "title": "Run Tests Before Promotion",
+              "default": true
+            }
+          },
+          "required": ["target_environment"]
+        }
+      },
+      "invocationMethod": {
+        "type": "WEBHOOK",
+        "url": "http://port-gitops-controller.port-system.svc.cluster.local:8080/webhooks/promote"
+      },
+      "requiredApproval": {
+        "type": "manual",
+        "approvers": {
+          "users": [],
+          "teams": ["platform-team", "sre-team"]
+        }
+      }
+    }
+
+  # Rollback Action
+  rollback-action.json: |
+    {
+      "identifier": "rollback_deployment",
+      "title": "Rollback Deployment",
+      "icon": "Rollback", 
+      "trigger": {
+        "type": "self-service",
+        "operation": "DAY-2",
+        "blueprintIdentifier": "deployment",
+        "userInputs": {
+          "properties": {
+            "target_version": {
+              "type": "string",
+              "title": "Rollback to Version",
+              "description": "Version to rollback to (leave empty for previous version)"
+            },
+            "reason": {
+              "type": "string",
+              "title": "Rollback Reason",
+              "description": "Why is this rollback needed?"
+            }
+          },
+          "required": ["reason"]
+        }
+      },
+      "invocationMethod": {
+        "type": "WEBHOOK",
+        "url": "http://port-gitops-controller.port-system.svc.cluster.local:8080/webhooks/rollback"
+      },
+      "requiredApproval": false
+    }
+
+  # Scale Resources Action
+  scale-resources-action.json: |
+    {
+      "identifier": "scale_resources",
+      "title": "Scale Resources",
+      "icon": "Scale",
+      "trigger": {
+        "type": "self-service", 
+        "operation": "DAY-2",
+        "blueprintIdentifier": "deployment",
+        "userInputs": {
+          "properties": {
+            "replicas": {
+              "type": "number",
+              "title": "Number of Replicas",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "cpu_limit": {
+              "type": "string",
+              "title": "CPU Limit",
+              "enum": ["100m", "200m", "500m", "1000m", "2000m"]
+            },
+            "memory_limit": {
+              "type": "string", 
+              "title": "Memory Limit",
+              "enum": ["128Mi", "256Mi", "512Mi", "1Gi", "2Gi"]
+            }
+          },
+          "required": ["replicas"]
+        }
+      },
+      "invocationMethod": {
+        "type": "WEBHOOK",
+        "url": "http://port-gitops-controller.port-system.svc.cluster.local:8080/webhooks/scale"
+      },
+      "requiredApproval": {
+        "type": "manual",
+        "approvers": {
+          "teams": ["platform-team"],
+          "ownersOfEntity": "service"
+        }
+      }
+    }

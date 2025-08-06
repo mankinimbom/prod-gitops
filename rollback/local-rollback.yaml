@@ -1,0 +1,499 @@
+---
+# Local Automated Rollback Configuration
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rollback-system
+  labels:
+    name: rollback-system
+
+---
+# Local Rollback Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-rollback-config
+  namespace: rollback-system
+data:
+  config.yaml: |
+    # Local rollback automation settings
+    health_check:
+      timeout: 300  # 5 minutes
+      interval: 30   # 30 seconds
+      retries: 3
+    
+    rollback_triggers:
+      # Application health degradation
+      - name: app_health_degraded
+        check_command: "kubectl get pods -n prod | grep -v Running | wc -l"
+        threshold: "1"  # More than 1 non-running pod
+        duration: 300   # 5 minutes
+        action: "rollback"
+        
+      # Memory usage spike (simplified check)
+      - name: memory_spike
+        check_command: "kubectl top pods -n prod --no-headers | awk '{if($3 ~ /Mi/) print $3}' | sed 's/Mi//' | awk '{sum+=$1} END {print sum}'"
+        threshold: "2000"  # More than 2GB total memory usage
+        duration: 120      # 2 minutes
+        action: "rollback"
+
+---
+# Simple Rollback Automation Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: local-rollback-automation
+  namespace: rollback-system
+  labels:
+    app: rollback-automation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rollback-automation
+  template:
+    metadata:
+      labels:
+        app: rollback-automation
+    spec:
+      serviceAccountName: rollback-automation
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: rollback-automation
+        image: bitnami/kubectl:latest
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          echo "Starting local rollback automation service..."
+          
+          # Health check function
+          check_app_health() {
+            local app_name=$1
+            local namespace=$2
+            
+            # Check if all pods are running
+            NOT_RUNNING=$(kubectl get pods -n $namespace -l app=$app_name | grep -v Running | grep -v READY | wc -l)
+            
+            if [ "$NOT_RUNNING" -gt 0 ]; then
+              echo "Unhealthy pods detected for $app_name: $NOT_RUNNING"
+              return 1
+            fi
+            
+            return 0
+          }
+          
+          # Rollback function
+          perform_rollback() {
+            local app_name=$1
+            local namespace=$2
+            
+            echo "Performing rollback for $app_name in namespace $namespace"
+            
+            # Get current deployment
+            CURRENT_IMAGE=$(kubectl get deployment $app_name -n $namespace -o jsonpath='{.spec.template.spec.containers[0].image}')
+            echo "Current image: $CURRENT_IMAGE"
+            
+            # Simple rollback - use previous image with 'latest' tag or decrement version
+            if [[ $CURRENT_IMAGE == *":latest" ]]; then
+              echo "Cannot rollback from latest tag automatically"
+              return 1
+            fi
+            
+            # Extract version and decrement (simplified)
+            if [[ $CURRENT_IMAGE =~ :([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+              CURRENT_VERSION="${BASH_REMATCH[1]}"
+              echo "Current version: $CURRENT_VERSION"
+              
+              # For simplicity, rollback to .0 version (e.g., 1.0.5 -> 1.0.0)
+              BASE_VERSION=$(echo $CURRENT_VERSION | cut -d. -f1-2)
+              ROLLBACK_VERSION="${BASE_VERSION}.0"
+              
+              ROLLBACK_IMAGE=$(echo $CURRENT_IMAGE | sed "s/:$CURRENT_VERSION/:$ROLLBACK_VERSION/")
+              echo "Rolling back to: $ROLLBACK_IMAGE"
+              
+              # Perform rollback
+              kubectl set image deployment/$app_name -n $namespace $app_name=$ROLLBACK_IMAGE
+              
+              # Wait for rollout
+              kubectl rollout status deployment/$app_name -n $namespace --timeout=300s
+              
+              echo "Rollback completed for $app_name"
+              
+              # Log rollback event
+              kubectl annotate deployment $app_name -n $namespace \
+                "rollback.automation/timestamp=$(date)" \
+                "rollback.automation/from-image=$CURRENT_IMAGE" \
+                "rollback.automation/to-image=$ROLLBACK_IMAGE" \
+                --overwrite
+            else
+              echo "Unable to determine version from image: $CURRENT_IMAGE"
+              return 1
+            fi
+          }
+          
+          # Main monitoring loop
+          while true; do
+            echo "Checking application health..."
+            
+            # Check backend application
+            if ! check_app_health "backend" "prod"; then
+              echo "Backend application unhealthy, initiating rollback..."
+              if perform_rollback "backend" "prod"; then
+                echo "Backend rollback successful"
+              else
+                echo "Backend rollback failed"
+              fi
+            fi
+            
+            # Check frontend application
+            if ! check_app_health "frontend" "prod"; then
+              echo "Frontend application unhealthy, initiating rollback..."
+              if perform_rollback "frontend" "prod"; then
+                echo "Frontend rollback successful"
+              else
+                echo "Frontend rollback failed"
+              fi
+            fi
+            
+            echo "Health check cycle completed. Sleeping for 60 seconds..."
+            sleep 60
+          done
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+            ephemeral-storage: 100Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+            ephemeral-storage: 500Mi
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+
+---
+# Rollback Automation Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rollback-automation
+  namespace: rollback-system
+
+---
+# Rollback Automation Role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rollback-automation
+rules:
+# Deployment management
+- apiGroups: ["apps"]
+  resources: ["deployments"]
+  verbs: ["get", "list", "patch", "update"]
+# Pod monitoring
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+# Rollout status
+- apiGroups: ["apps"]
+  resources: ["deployments/status"]
+  verbs: ["get"]
+# Events creation
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create"]
+
+---
+# Rollback Automation ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rollback-automation
+subjects:
+- kind: ServiceAccount
+  name: rollback-automation
+  namespace: rollback-system
+roleRef:
+  kind: ClusterRole
+  name: rollback-automation
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Manual Rollback Job Template
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: manual-rollback-backend
+  namespace: rollback-system
+  labels:
+    component: manual-rollback
+    target-app: backend
+spec:
+  template:
+    spec:
+      serviceAccountName: rollback-automation
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: rollback
+        image: bitnami/kubectl:latest
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+        command:
+        - /bin/bash
+        - -c
+        - |
+          set -e
+          APP_NAME="${APP_NAME:-backend}"
+          NAMESPACE="${NAMESPACE:-prod}"
+          TARGET_VERSION="${TARGET_VERSION}"
+          
+          echo "Manual rollback initiated for $APP_NAME in $NAMESPACE"
+          
+          if [ -z "$TARGET_VERSION" ]; then
+            echo "ERROR: TARGET_VERSION environment variable must be set"
+            exit 1
+          fi
+          
+          # Get current deployment
+          CURRENT_IMAGE=$(kubectl get deployment $APP_NAME -n $NAMESPACE -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "Current image: $CURRENT_IMAGE"
+          
+          # Build target image
+          IMAGE_REPO=$(echo $CURRENT_IMAGE | cut -d: -f1)
+          TARGET_IMAGE="${IMAGE_REPO}:${TARGET_VERSION}"
+          
+          echo "Rolling back to: $TARGET_IMAGE"
+          
+          # Perform rollback
+          kubectl set image deployment/$APP_NAME -n $NAMESPACE $APP_NAME=$TARGET_IMAGE
+          
+          # Wait for rollout
+          kubectl rollout status deployment/$APP_NAME -n $NAMESPACE --timeout=300s
+          
+          echo "Manual rollback completed successfully"
+        env:
+        - name: APP_NAME
+          value: "backend"  # Change this for different apps
+        - name: NAMESPACE
+          value: "prod"
+        - name: TARGET_VERSION
+          value: "1.0.0"    # Change this to target version
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+            ephemeral-storage: 100Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+            ephemeral-storage: 500Mi
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+
+---
+# Health Check Dashboard
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-dashboard
+  namespace: rollback-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: health-dashboard
+  template:
+    metadata:
+      labels:
+        app: health-dashboard
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: dashboard
+        image: nginx:1.25-alpine
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+        ports:
+        - name: http
+          containerPort: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+            ephemeral-storage: 100Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+            ephemeral-storage: 500Mi
+        volumeMounts:
+        - name: html
+          mountPath: /usr/share/nginx/html
+          readOnly: true
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        - name: var-cache
+          mountPath: /var/cache/nginx
+        - name: var-run
+          mountPath: /var/run
+      volumes:
+      - name: html
+        configMap:
+          name: health-dashboard-html
+      - name: nginx-config
+        configMap:
+          name: health-dashboard-nginx
+      - name: tmp
+        emptyDir: {}
+      - name: var-cache
+        emptyDir: {}
+      - name: var-run
+        emptyDir: {}
+
+---
+# Health Dashboard HTML
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: health-dashboard-html
+  namespace: rollback-system
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Local Health Dashboard</title>
+        <meta http-equiv="refresh" content="30">
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            .status { padding: 10px; margin: 10px 0; border-radius: 5px; }
+            .healthy { background-color: #d4edda; border: 1px solid #c3e6cb; }
+            .unhealthy { background-color: #f8d7da; border: 1px solid #f5c6cb; }
+            .header { background-color: #007bff; color: white; padding: 15px; margin: -20px -20px 20px -20px; }
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1>🏠 Local GitOps Health Dashboard</h1>
+            <p>Auto-refresh every 30 seconds</p>
+        </div>
+        
+        <h2>Application Status</h2>
+        <div id="status">
+            <p>Loading status...</p>
+        </div>
+        
+        <h2>Recent Rollbacks</h2>
+        <div id="rollbacks">
+            <p>Check kubectl logs for rollback history</p>
+        </div>
+        
+        <h2>Manual Actions</h2>
+        <p>To perform manual rollback:</p>
+        <pre>
+    # Edit the job with target version
+    kubectl edit job manual-rollback-backend -n rollback-system
+    
+    # Delete and recreate to run again
+    kubectl delete job manual-rollback-backend -n rollback-system
+    kubectl apply -f rollback/local-rollback.yaml
+        </pre>
+        
+        <h2>Useful Commands</h2>
+        <pre>
+    # Check application health
+    kubectl get pods -n prod
+    
+    # View rollback automation logs
+    kubectl logs -l app=rollback-automation -n rollback-system
+    
+    # Check deployment status
+    kubectl get deployments -n prod
+    
+    # View recent events
+    kubectl get events -n prod --sort-by='.lastTimestamp'
+        </pre>
+        
+        <p><small>Last updated: <span id="timestamp"></span></small></p>
+        <script>
+            document.getElementById('timestamp').textContent = new Date().toLocaleString();
+        </script>
+    </body>
+    </html>
+
+---
+# Nginx Config for Dashboard
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: health-dashboard-nginx
+  namespace: rollback-system
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        server_name localhost;
+        root /usr/share/nginx/html;
+        index index.html;
+        
+        location / {
+            try_files $uri $uri/ =404;
+        }
+    }
+
+---
+# Service for Health Dashboard
+apiVersion: v1
+kind: Service
+metadata:
+  name: health-dashboard
+  namespace: rollback-system
+spec:
+  selector:
+    app: health-dashboard
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  type: ClusterIP

@@ -1,0 +1,170 @@
+---
+# Velero Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: velero
+  labels:
+    name: velero
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+
+---
+# Velero Server Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: velero-server-config
+  namespace: velero
+  labels:
+    component: velero
+data:
+  # Cloud provider configuration
+  cloud-provider-config: |
+    [Global]
+    provider=aws
+    region=us-west-2
+  
+  # Backup retention policy
+  default-backup-ttl: "720h"  # 30 days
+  
+  # Restore configuration
+  restore-resource-priorities: |
+    namespaces,
+    storageclasses,
+    volumesnapshotclass.snapshot.storage.k8s.io,
+    volumesnapshotcontents.snapshot.storage.k8s.io,
+    volumesnapshots.snapshot.storage.k8s.io,
+    persistentvolumes,
+    persistentvolumeclaims,
+    secrets,
+    configmaps,
+    serviceaccounts,
+    limitranges,
+    pods,
+    replicasets.apps,
+    deployments.apps,
+    services,
+    ingresses.networking.k8s.io
+
+---
+# Velero Installation via Helm Values
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: velero-helm-values
+  namespace: velero
+data:
+  values.yaml: |
+    image:
+      repository: velero/velero
+      tag: v1.12.1
+      pullPolicy: IfNotPresent
+    
+    initContainers:
+    - name: velero-plugin-for-aws
+      image: velero/velero-plugin-for-aws:v1.8.1
+      imagePullPolicy: IfNotPresent
+      volumeMounts:
+      - mountPath: /target
+        name: plugins
+    
+    configuration:
+      provider: aws
+      backupStorageLocation:
+        bucket: your-velero-backup-bucket
+        prefix: cluster-backups
+        config:
+          region: us-west-2
+          s3ForcePathStyle: false
+      volumeSnapshotLocation:
+        provider: aws
+        config:
+          region: us-west-2
+      
+      # Features
+      features: EnableCSI
+      
+      # Log level
+      logLevel: info
+      
+      # Default backup TTL
+      defaultBackupTTL: 720h
+      
+      # Restore only mode
+      restoreOnlyMode: false
+    
+    # Service account for Velero
+    serviceAccount:
+      server:
+        create: true
+        name: velero-server
+        annotations:
+          eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT:role/VeleroBackupRole
+    
+    # Resource limits
+    resources:
+      requests:
+        cpu: 500m
+        memory: 128Mi
+      limits:
+        cpu: 1000m
+        memory: 512Mi
+    
+    # Security context
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      fsGroup: 65534
+    
+    # Pod security context
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 65534
+      runAsGroup: 65534
+      fsGroup: 65534
+    
+    # Node selector
+    nodeSelector:
+      node-type: system
+    
+    # Tolerations
+    tolerations:
+    - key: node-role.kubernetes.io/system
+      operator: Exists
+      effect: NoSchedule
+
+---
+# Backup Storage Location
+apiVersion: velero.io/v1
+kind: BackupStorageLocation
+metadata:
+  name: aws-s3-backup
+  namespace: velero
+  labels:
+    component: velero
+spec:
+  provider: aws
+  objectStorage:
+    bucket: your-velero-backup-bucket
+    prefix: cluster-backups
+  config:
+    region: us-west-2
+    s3ForcePathStyle: "false"
+  accessMode: ReadWrite
+
+---
+# Volume Snapshot Location
+apiVersion: velero.io/v1
+kind: VolumeSnapshotLocation
+metadata:
+  name: aws-ebs-snapshots
+  namespace: velero
+  labels:
+    component: velero
+spec:
+  provider: aws
+  config:
+    region: us-west-2

@@ -1,0 +1,264 @@
+---
+# Daily Production Backup Schedule
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: prod-daily-backup
+  namespace: velero
+  labels:
+    environment: production
+    component: backup
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM UTC
+  template:
+    includedNamespaces:
+    - prod
+    - argocd
+    - monitoring
+    - ingress-nginx
+    - cert-manager
+    
+    excludedResources:
+    - events
+    - events.events.k8s.io
+    - backups.velero.io
+    - restores.velero.io
+    - backuprepositories.velero.io
+    - podvolumebackups.velero.io
+    - podvolumerestores.velero.io
+    
+    includeClusterResources: true
+    
+    storageLocation: aws-s3-backup
+    volumeSnapshotLocations:
+    - aws-ebs-snapshots
+    
+    ttl: 720h0m0s  # 30 days retention
+    
+    labelSelector:
+      matchExpressions:
+      - key: velero.io/exclude-from-backup
+        operator: NotIn
+        values: ["true"]
+    
+    hooks:
+      resources:
+      # PostgreSQL backup hook
+      - name: postgres-backup-hook
+        includedNamespaces:
+        - prod
+        labelSelector:
+          matchLabels:
+            app: postgresql
+        pre:
+        - exec:
+            container: postgresql
+            command:
+            - /bin/bash
+            - -c
+            - |
+              mkdir -p /tmp/backup
+              pg_dump -U $POSTGRES_USER -h localhost $POSTGRES_DB > /tmp/backup/postgres-$(date +%Y%m%d-%H%M%S).sql
+              echo "PostgreSQL backup created at /tmp/backup/"
+        post:
+        - exec:
+            container: postgresql
+            command:
+            - /bin/bash
+            - -c
+            - |
+              rm -rf /tmp/backup
+              echo "PostgreSQL backup cleanup completed"
+      
+      # ArgoCD backup hook
+      - name: argocd-backup-hook
+        includedNamespaces:
+        - argocd
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/component: server
+        pre:
+        - exec:
+            container: argocd-server
+            command:
+            - /bin/bash
+            - -c
+            - |
+              echo "Creating ArgoCD backup..."
+              argocd admin export > /tmp/argocd-export.yaml
+        post:
+        - exec:
+            container: argocd-server
+            command:
+            - /bin/bash
+            - -c
+            - |
+              rm -f /tmp/argocd-export.yaml
+              echo "ArgoCD backup cleanup completed"
+
+---
+# Weekly Full Cluster Backup
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: weekly-full-backup
+  namespace: velero
+  labels:
+    environment: production
+    component: backup
+    type: full-cluster
+spec:
+  schedule: "0 3 * * 0"  # Weekly on Sunday at 3 AM UTC
+  template:
+    # Include all namespaces except system ones
+    excludedNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+    - local-path-storage
+    
+    includeClusterResources: true
+    
+    storageLocation: aws-s3-backup
+    volumeSnapshotLocations:
+    - aws-ebs-snapshots
+    
+    ttl: 2160h0m0s  # 90 days retention
+    
+    defaultVolumesToFsBackup: true
+
+---
+# Critical Applications Backup (Every 6 hours)
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: critical-apps-backup
+  namespace: velero
+  labels:
+    environment: production
+    component: backup
+    priority: critical
+spec:
+  schedule: "0 */6 * * *"  # Every 6 hours
+  template:
+    includedNamespaces:
+    - prod
+    - argocd
+    
+    labelSelector:
+      matchLabels:
+        backup.priority: critical
+    
+    storageLocation: aws-s3-backup
+    volumeSnapshotLocations:
+    - aws-ebs-snapshots
+    
+    ttl: 168h0m0s  # 7 days retention
+
+---
+# Backup Verification Job
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: backup-verification
+  namespace: velero
+  labels:
+    component: backup-verification
+spec:
+  schedule: "0 8 * * *"  # Daily at 8 AM UTC
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: backup-verifier
+          restartPolicy: OnFailure
+          containers:
+          - name: backup-verifier
+            image: velero/velero:v1.12.1
+            command:
+            - /bin/bash
+            - -c
+            - |
+              set -e
+              echo "Starting backup verification..."
+              
+              # Check if yesterday's backup exists
+              YESTERDAY=$(date -d "yesterday" +%Y-%m-%d)
+              
+              # List recent backups
+              velero backup get --selector="velero.io/schedule-name=prod-daily-backup" --output json > /tmp/backups.json
+              
+              # Verify backup completion
+              RECENT_BACKUP=$(jq -r --arg date "$YESTERDAY" '.items[] | select(.metadata.creationTimestamp | startswith($date)) | .metadata.name' /tmp/backups.json | head -1)
+              
+              if [ -z "$RECENT_BACKUP" ]; then
+                echo "ERROR: No backup found for $YESTERDAY"
+                exit 1
+              fi
+              
+              # Check backup status
+              BACKUP_STATUS=$(velero backup describe $RECENT_BACKUP --output json | jq -r '.status.phase')
+              
+              if [ "$BACKUP_STATUS" != "Completed" ]; then
+                echo "ERROR: Backup $RECENT_BACKUP is in status: $BACKUP_STATUS"
+                exit 1
+              fi
+              
+              echo "SUCCESS: Backup $RECENT_BACKUP completed successfully"
+              
+              # Send notification (webhook, Slack, etc.)
+              curl -X POST $WEBHOOK_URL \
+                -H 'Content-Type: application/json' \
+                -d "{\"text\":\"✅ Backup verification passed for $RECENT_BACKUP\"}" || true
+            env:
+            - name: WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: notification-webhook
+                  key: url
+            volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          volumes:
+          - name: tmp
+            emptyDir: {}
+
+---
+# Backup Verifier Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backup-verifier
+  namespace: velero
+  labels:
+    component: backup-verification
+
+---
+# Backup Verifier ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backup-verifier
+  labels:
+    component: backup-verification
+rules:
+- apiGroups: ["velero.io"]
+  resources: ["backups", "restores"]
+  verbs: ["get", "list", "describe"]
+
+---
+# Backup Verifier ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: backup-verifier
+  labels:
+    component: backup-verification
+subjects:
+- kind: ServiceAccount
+  name: backup-verifier
+  namespace: velero
+roleRef:
+  kind: ClusterRole
+  name: backup-verifier
+  apiGroup: rbac.authorization.k8s.io

@@ -1,0 +1,179 @@
+# Prometheus Monitoring Configuration for GitOps
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-gitops-rules
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+data:
+  gitops.rules.yaml: |
+    groups:
+    - name: argocd.rules
+      rules:
+      - alert: ArgoCDAppNotSynced
+        expr: argocd_app_info{sync_status!="Synced"} > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "ArgoCD Application {{ $labels.name }} is not synced"
+          description: "ArgoCD Application {{ $labels.name }} in namespace {{ $labels.namespace }} has been out of sync for more than 15 minutes."
+          
+      - alert: ArgoCDAppHealthDegraded
+        expr: argocd_app_info{health_status!="Healthy"} > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ArgoCD Application {{ $labels.name }} health is degraded"
+          description: "ArgoCD Application {{ $labels.name }} in namespace {{ $labels.namespace }} has degraded health status: {{ $labels.health_status }}"
+          
+      - alert: ArgoCDSyncFailed
+        expr: increase(argocd_app_sync_total{phase="Failed"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "ArgoCD sync failed for {{ $labels.name }}"
+          description: "ArgoCD Application {{ $labels.name }} sync has failed in the last 5 minutes."
+          
+    - name: rollouts.rules
+      rules:
+      - alert: RolloutStuck
+        expr: kube_rollout_status_phase{phase="Progressing"} > 0 and (time() - kube_rollout_status_observed_generation) > 1800
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rollout {{ $labels.rollout }} appears to be stuck"
+          description: "Rollout {{ $labels.rollout }} in namespace {{ $labels.namespace }} has been progressing for more than 30 minutes."
+          
+      - alert: RolloutFailed
+        expr: kube_rollout_status_phase{phase="Degraded"} > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Rollout {{ $labels.rollout }} has failed"
+          description: "Rollout {{ $labels.rollout }} in namespace {{ $labels.namespace }} is in a degraded state."
+
+---
+# Grafana Dashboard for GitOps
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gitops-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  gitops-dashboard.json: |
+    {
+      "dashboard": {
+        "id": null,
+        "title": "GitOps & ArgoCD Overview",
+        "tags": ["gitops", "argocd", "deployments"],
+        "timezone": "browser",
+        "panels": [
+          {
+            "id": 1,
+            "title": "Application Sync Status",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "sum by (sync_status) (argocd_app_info)",
+                "legendFormat": "{{ sync_status }}"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "value"
+                },
+                "mappings": [
+                  {
+                    "options": {
+                      "Synced": {
+                        "color": "green"
+                      },
+                      "OutOfSync": {
+                        "color": "red"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+          },
+          {
+            "id": 2,
+            "title": "Application Health Status",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "sum by (health_status) (argocd_app_info)",
+                "legendFormat": "{{ health_status }}"
+              }
+            ],
+            "fieldConfig": {
+              "defaults": {
+                "color": {
+                  "mode": "value"
+                },
+                "mappings": [
+                  {
+                    "options": {
+                      "Healthy": {
+                        "color": "green"
+                      },
+                      "Degraded": {
+                        "color": "red"
+                      },
+                      "Progressing": {
+                        "color": "yellow"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+          },
+          {
+            "id": 3,
+            "title": "Deployment Frequency (24h)",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "increase(argocd_app_sync_total{phase=\"Succeeded\"}[24h])",
+                "legendFormat": "Successful Syncs - {{ $labels.name }}"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8}
+          },
+          {
+            "id": 4,
+            "title": "Rollout Success Rate",
+            "type": "stat",
+            "targets": [
+              {
+                "expr": "rate(argo_rollouts_phase_total{phase=\"Succeeded\"}[1h]) / rate(argo_rollouts_phase_total[1h]) * 100",
+                "legendFormat": "Success Rate %"
+              }
+            ],
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16}
+          }
+        ],
+        "time": {
+          "from": "now-6h",
+          "to": "now"
+        },
+        "refresh": "30s"
+      }
+    }

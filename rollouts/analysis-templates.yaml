@@ -1,0 +1,51 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate-analysis
+  namespace: prod
+  labels:
+    app: rollout-analysis
+spec:
+  metrics:
+  - name: success-rate
+    interval: "30s"
+    count: 5
+    successCondition: result[0] >= 0.95
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: http://prometheus.monitoring.svc.cluster.local:9090
+        query: |
+          sum(rate(http_requests_total{job="backend",code!~"5.."}[2m])) /
+          sum(rate(http_requests_total{job="backend"}[2m]))
+  - name: latency-p99
+    interval: "30s"
+    count: 5
+    successCondition: result[0] <= 1000
+    failureLimit: 3
+    provider:
+      prometheus:
+        address: http://prometheus.monitoring.svc.cluster.local:9090
+        query: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket{job="backend"}[2m])) by (le)
+          ) * 1000
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: error-rate-analysis
+  namespace: prod
+spec:
+  metrics:
+  - name: error-rate
+    interval: "30s"
+    count: 5
+    successCondition: result[0] <= 0.05
+    failureLimit: 2
+    provider:
+      prometheus:
+        address: http://prometheus.monitoring.svc.cluster.local:9090
+        query: |
+          sum(rate(http_requests_total{job="backend",code=~"5.."}[2m])) /
+          sum(rate(http_requests_total{job="backend"}[2m]))

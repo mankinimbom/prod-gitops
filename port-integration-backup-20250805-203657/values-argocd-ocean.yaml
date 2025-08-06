@@ -1,0 +1,216 @@
+# Port.io ArgoCD Ocean Integration Values
+# This file customizes the port-ocean ArgoCD integration Helm chart deployment
+
+# Port.io API Configuration
+port:
+  clientId: "57qkRMZxmGcfVKfipr2to8pBMII77FYK"
+  clientSecret: "n0eBOFw6SVO5nDYUAcM56Dk6jJKpeb11ePgzGC8O5FS0J4YrkplXrM1VPR7Fk6wN"
+  baseUrl: "https://api.port.io"
+
+# Initialize Port.io resources
+initializePortResources: true
+sendRawDataExamples: true
+scheduledResyncInterval: 360
+
+# Integration configuration
+integration:
+  identifier: "argocd"
+  type: "argocd"
+  
+  # Event listener configuration
+  eventListener:
+    type: "POLLING"
+  
+  # ArgoCD connection secrets
+  secrets:
+    token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJhcmdvY2QiLCJzdWIiOiJtaWNoYWVsLXRva2VuOmFwaUtleSIsIm5iZiI6MTc1NDI1NTE3NiwiaWF0IjoxNzU0MjU1MTc2LCJqdGkiOiIxOGM5MWI0OS1iYjVjLTQwMzYtYjNkMy1kYmQxNDA3YmIzYzMifQ.FI92Y6OYuO_QoIvVTlUNqVerE0aT89ekRyCxT3Xgff0"
+  
+  # ArgoCD configuration
+  config:
+    serverUrl: "http://argo.annkinimbom.com/"
+    insecure: true
+    # Optional: Include specific projects or applications
+    appProjects:
+      - "microservices"
+      - "default"
+    # Resource filtering
+    resources:
+      - "applications"
+      - "repositories"
+      - "projects"
+      - "clusters"
+
+# Resource configuration
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 200m
+    memory: 256Mi
+
+# Service account
+serviceAccount:
+  create: true
+  annotations:
+    argocd.argoproj.io/compare-options: IgnoreExtraneous
+  name: ""
+
+# RBAC
+rbac:
+  create: true
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+
+# Security context
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+
+# Pod annotations
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8000"
+  prometheus.io/path: "/metrics"
+
+# Health checks
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 5
+
+# Port.io specific configuration
+portConfig: |
+  # ArgoCD resource mappings for Port.io
+  resources:
+    - kind: Application
+      selector:
+        query: 'true'
+      port:
+        entity:
+          mappings:
+            identifier: '.metadata.name + "-" + .metadata.namespace'
+            title: '.metadata.name'
+            blueprint: '"argocd-application"'
+            properties:
+              syncStatus: '.status.sync.status // "Unknown"'
+              healthStatus: '.status.health.status // "Unknown"'
+              lastSyncTime: '.status.operationState.finishedAt // .status.operationState.startedAt'
+              repoUrl: '.spec.source.repoURL'
+              targetRevision: '.spec.source.targetRevision'
+              namespace: '.spec.destination.namespace'
+              project: '.spec.project'
+              path: '.spec.source.path'
+              syncPolicy: '.spec.syncPolicy'
+              annotations: '.metadata.annotations'
+              labels: '.metadata.labels'
+            relations:
+              microservice: '.metadata.labels["app.kubernetes.io/name"]'
+              environment: '.spec.destination.namespace'
+              project: '.spec.project'
+    
+    - kind: Repository
+      selector:
+        query: 'true'
+      port:
+        entity:
+          mappings:
+            identifier: '.repo | gsub("[^a-zA-Z0-9]"; "-")'
+            title: '.repo'
+            blueprint: '"repository"'
+            properties:
+              url: '.repo'
+              type: '.type'
+              connectionState: '.connectionState.status'
+              lastRefresh: '.connectionState.attemptedAt'
+    
+    - kind: AppProject
+      selector:
+        query: 'true'
+      port:
+        entity:
+          mappings:
+            identifier: '.metadata.name'
+            title: '.metadata.name'
+            blueprint: '"argocd-project"'
+            properties:
+              description: '.spec.description'
+              sourceRepos: '.spec.sourceRepos'
+              destinations: '.spec.destinations'
+              roles: '.spec.roles | length'
+              clusterResourceWhitelist: '.spec.clusterResourceWhitelist'
+              namespaceResourceWhitelist: '.spec.namespaceResourceWhitelist'
+
+# Environment variables
+env:
+  - name: LOG_LEVEL
+    value: "INFO"
+  - name: PORT_INTEGRATION_IDENTIFIER
+    value: "argocd-ocean"
+  - name: ARGOCD_INTEGRATION_NAME
+    value: "ArgoCD Ocean Integration"
+
+# Deployment strategy
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 1
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 8000
+  targetPort: 8000
+
+# Optional: Configure ingress for webhook endpoints
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+# Webhook configuration
+webhook:
+  enabled: true
+  path: "/webhooks/argocd"
+  port: 8000
+
+# Volume mounts for configuration
+volumes: []
+volumeMounts: []
+
+# Node selector and scheduling
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Pod disruption budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Horizontal Pod Autoscaler
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80

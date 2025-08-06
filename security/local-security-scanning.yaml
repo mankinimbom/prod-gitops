@@ -1,0 +1,369 @@
+---
+# Local Security Scanning Configuration
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: security-system
+  labels:
+    name: security-system
+
+---
+# Local Trivy Scanner ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-trivy-config
+  namespace: security-system
+data:
+  config.yaml: |
+    # Local Trivy configuration
+    cache:
+      dir: /tmp/trivy-cache
+    db:
+      repository: ghcr.io/aquasecurity/trivy-db
+    java-db:
+      repository: ghcr.io/aquasecurity/trivy-java-db
+    oci:
+      skip-tls-verify: false
+    vulnerability:
+      type: os,library
+    severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+    format: json
+    timeout: 5m0s
+
+---
+# Local Security Scanner CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: local-security-scanner
+  namespace: security-system
+  labels:
+    app: security-scanner
+spec:
+  schedule: "0 6 * * *"  # Daily at 6 AM
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app: security-scanner
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            fsGroup: 65534
+          containers:
+          - name: trivy-scanner
+            image: aquasecurity/trivy:0.48.0
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 65534
+              capabilities:
+                drop:
+                - ALL
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Starting local security scan..."
+              
+              # Create report directory
+              mkdir -p /reports
+              
+              # Get all images from prod namespace
+              IMAGES=$(kubectl get pods -n prod -o jsonpath='{.items[*].spec.containers[*].image}' | tr ' ' '\n' | sort -u)
+              
+              echo "Found images to scan:"
+              echo "$IMAGES"
+              
+              # Scan each image
+              for image in $IMAGES; do
+                echo "Scanning image: $image"
+                SAFE_NAME=$(echo $image | tr '/' '_' | tr ':' '_')
+                
+                # Image vulnerability scan
+                trivy image --format json --output /reports/${SAFE_NAME}-vuln.json $image || true
+                
+                # Generate human-readable report
+                trivy image --format table --output /reports/${SAFE_NAME}-report.txt $image || true
+              done
+              
+              # Scan local file system for secrets and misconfigurations
+              echo "Scanning local configurations..."
+              trivy config --format json --output /reports/config-scan.json /config || true
+              
+              # Generate summary
+              echo "=== SECURITY SCAN SUMMARY ===" > /reports/summary.txt
+              echo "Scan Date: $(date)" >> /reports/summary.txt
+              echo "Images Scanned: $(echo "$IMAGES" | wc -l)" >> /reports/summary.txt
+              
+              # Count vulnerabilities
+              CRITICAL_COUNT=0
+              HIGH_COUNT=0
+              
+              for report in /reports/*-vuln.json; do
+                if [ -f "$report" ]; then
+                  CRIT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$report" 2>/dev/null || echo 0)
+                  HIGH=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$report" 2>/dev/null || echo 0)
+                  CRITICAL_COUNT=$((CRITICAL_COUNT + CRIT))
+                  HIGH_COUNT=$((HIGH_COUNT + HIGH))
+                fi
+              done
+              
+              echo "Critical Vulnerabilities: $CRITICAL_COUNT" >> /reports/summary.txt
+              echo "High Vulnerabilities: $HIGH_COUNT" >> /reports/summary.txt
+              
+              # Save to local storage
+              cp -r /reports/* /local-storage/security-reports/ || echo "Warning: Could not save to local storage"
+              
+              echo "Security scan completed successfully"
+              cat /reports/summary.txt
+            env:
+            - name: TRIVY_CACHE_DIR
+              value: /tmp/trivy-cache
+            resources:
+              requests:
+                cpu: 200m
+                memory: 512Mi
+                ephemeral-storage: 1Gi
+              limits:
+                cpu: 1000m
+                memory: 2Gi
+                ephemeral-storage: 4Gi
+            volumeMounts:
+            - name: reports
+              mountPath: /reports
+            - name: cache
+              mountPath: /tmp
+            - name: config-scan
+              mountPath: /config
+              readOnly: true
+            - name: local-storage
+              mountPath: /local-storage
+          volumes:
+          - name: reports
+            emptyDir:
+              sizeLimit: 1Gi
+          - name: cache
+            emptyDir:
+              sizeLimit: 2Gi
+          - name: config-scan
+            configMap:
+              name: local-trivy-config
+          - name: local-storage
+            hostPath:
+              path: /var/local-security-reports
+              type: DirectoryOrCreate
+
+---
+# Local Security Reports Viewer
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: security-reports-viewer
+  namespace: security-system
+  labels:
+    app: security-reports-viewer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: security-reports-viewer
+  template:
+    metadata:
+      labels:
+        app: security-reports-viewer
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: nginx
+        image: nginx:1.25-alpine
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+        ports:
+        - name: http
+          containerPort: 8080
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+            ephemeral-storage: 100Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+            ephemeral-storage: 500Mi
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+          readOnly: true
+        - name: reports
+          mountPath: /usr/share/nginx/html
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+        - name: var-cache
+          mountPath: /var/cache/nginx
+        - name: var-run
+          mountPath: /var/run
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-reports-config
+      - name: reports
+        hostPath:
+          path: /var/local-security-reports
+          type: Directory
+      - name: tmp
+        emptyDir: {}
+      - name: var-cache
+        emptyDir: {}
+      - name: var-run
+        emptyDir: {}
+
+---
+# Nginx Config for Reports Viewer
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-reports-config
+  namespace: security-system
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        server_name localhost;
+        root /usr/share/nginx/html;
+        index index.html index.htm;
+        
+        # Enable directory listing
+        location / {
+            autoindex on;
+            autoindex_exact_size off;
+            autoindex_localtime on;
+            try_files $uri $uri/ =404;
+        }
+        
+        # Handle JSON files
+        location ~* \.json$ {
+            add_header Content-Type application/json;
+        }
+        
+        # Handle text files
+        location ~* \.txt$ {
+            add_header Content-Type text/plain;
+        }
+    }
+
+---
+# Service for Reports Viewer
+apiVersion: v1
+kind: Service
+metadata:
+  name: security-reports-viewer
+  namespace: security-system
+  labels:
+    app: security-reports-viewer
+spec:
+  selector:
+    app: security-reports-viewer
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  type: ClusterIP
+
+---
+# Local Secret Scanner
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: local-secret-scanner
+  namespace: security-system
+spec:
+  schedule: "0 4 * * *"  # Daily at 4 AM
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65534
+            fsGroup: 65534
+          containers:
+          - name: secret-scanner
+            image: alpine/git:latest
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              runAsNonRoot: true
+              runAsUser: 65534
+              capabilities:
+                drop:
+                - ALL
+            command:
+            - /bin/sh
+            - -c
+            - |
+              set -e
+              echo "Starting local secret scanning..."
+              
+              # Create report directory
+              mkdir -p /reports
+              
+              # Scan for common secret patterns
+              echo "Scanning Kubernetes secrets..."
+              
+              # Check for base64 encoded secrets that might be exposed
+              kubectl get secrets -A -o yaml | grep -E "(password|token|key|secret)" > /reports/secrets-scan.txt || true
+              
+              # Scan ConfigMaps for sensitive data
+              echo "Scanning ConfigMaps for sensitive patterns..."
+              kubectl get configmaps -A -o yaml | grep -iE "(password|token|key|secret|api)" > /reports/configmap-scan.txt || true
+              
+              # Generate secret scan summary
+              echo "=== SECRET SCAN SUMMARY ===" > /reports/secret-summary.txt
+              echo "Scan Date: $(date)" >> /reports/secret-summary.txt
+              echo "Potential secrets found: $(cat /reports/secrets-scan.txt | wc -l)" >> /reports/secret-summary.txt
+              echo "ConfigMap issues found: $(cat /reports/configmap-scan.txt | wc -l)" >> /reports/secret-summary.txt
+              
+              # Save to local storage
+              cp -r /reports/* /local-storage/secret-reports/ || echo "Warning: Could not save to local storage"
+              
+              echo "Secret scanning completed"
+              cat /reports/secret-summary.txt
+            resources:
+              requests:
+                cpu: 100m
+                memory: 128Mi
+                ephemeral-storage: 500Mi
+              limits:
+                cpu: 200m
+                memory: 256Mi
+                ephemeral-storage: 1Gi
+            volumeMounts:
+            - name: reports
+              mountPath: /reports
+            - name: local-storage
+              mountPath: /local-storage
+          volumes:
+          - name: reports
+            emptyDir: {}
+          - name: local-storage
+            hostPath:
+              path: /var/local-security-reports
+              type: DirectoryOrCreate

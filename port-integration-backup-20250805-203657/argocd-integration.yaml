@@ -1,0 +1,303 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: port-system
+  labels:
+    name: port-system
+    app.kubernetes.io/name: port-system
+    app.kubernetes.io/part-of: port-integration
+
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: microservices-dev
+  namespace: argocd
+  labels:
+    app.kubernetes.io/component: applicationset
+    managed-by: port-io
+spec:
+  generators:
+  - git:
+      repoURL: 'https://github.com/your-org/microservices-configs'
+      revision: HEAD
+      directories:
+      - path: 'environments/dev/microservices/*'
+  template:
+    metadata:
+      name: '{{path.basename}}'
+      labels:
+        app.kubernetes.io/name: '{{path.basename}}'
+        managed-by: port-io
+      annotations:
+        port.io/entity: '{{path.basename}}'
+        port.io/environment: 'dev'
+    spec:
+      project: microservices
+      source:
+        repoURL: 'https://github.com/your-org/microservices-configs'
+        targetRevision: HEAD
+        path: '{{path}}'
+      destination:
+        server: 'https://kubernetes.default.svc'
+        namespace: 'dev'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - CreateNamespace=true
+
+---
+# ApplicationSet for multi-environment deployments
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: service-environments-appset
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: service-environments-appset
+    app.kubernetes.io/part-of: port-integration
+spec:
+  generators:
+  - matrix:
+      generators:
+      - git:
+          repoURL: https://github.com/your-org/gitops-manifests.git
+          revision: HEAD
+          directories:
+          - path: services/*
+      - list:
+          elements:
+          - env: dev
+            cluster: https://kubernetes.default.svc
+            auto_sync: "true"
+          - env: staging
+            cluster: https://kubernetes.default.svc
+            auto_sync: "true"
+          - env: prod
+            cluster: https://kubernetes.default.svc
+            auto_sync: "false"
+  template:
+    metadata:
+      name: '{{path.basename}}-{{env}}'
+      labels:
+        app.kubernetes.io/name: '{{path.basename}}'
+        app.kubernetes.io/environment: '{{env}}'
+        managed-by: port-io
+      annotations:
+        port.io/entity: '{{path.basename}}'
+        port.io/environment: '{{env}}'
+        argocd.argoproj.io/sync-wave: "1"
+    spec:
+      project: microservices
+      source:
+        repoURL: https://github.com/your-org/gitops-manifests.git
+        targetRevision: HEAD
+        path: 'services/{{path.basename}}/overlays/{{env}}'
+        kustomize:
+          images:
+          - 'localhost:5000/{{path.basename}}:*'
+      destination:
+        server: '{{cluster}}'
+        namespace: '{{env}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - CreateNamespace=true
+        - PrunePropagationPolicy=foreground
+        - PruneLast=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+      ignoreDifferences:
+      - group: apps
+        kind: Deployment
+        jsonPointers:
+        - /spec/replicas
+      - group: ""
+        kind: Secret
+        jsonPointers:
+        - /data
+
+---
+# ArgoCD Project for microservices
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: microservices
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: microservices-project
+    app.kubernetes.io/part-of: port-integration
+spec:
+  description: "Microservices managed by Port.io"
+  
+  # Source repositories
+  sourceRepos:
+  - 'https://github.com/your-org/gitops-manifests.git'
+  - 'https://charts.helm.sh/stable'
+  - 'https://helm.releases.hashicorp.com'
+  
+  # Allowed destinations
+  destinations:
+  - namespace: 'dev'
+    server: 'https://kubernetes.default.svc'
+  - namespace: 'staging'
+    server: 'https://kubernetes.default.svc'
+  - namespace: 'prod'
+    server: 'https://kubernetes.default.svc'
+  
+  # Cluster resource allow list
+  clusterResourceWhitelist:
+  - group: ''
+    kind: Namespace
+  - group: 'rbac.authorization.k8s.io'
+    kind: ClusterRole
+  - group: 'rbac.authorization.k8s.io'
+    kind: ClusterRoleBinding
+  
+  # Namespace resource allow list
+  namespaceResourceWhitelist:
+  - group: 'apps'
+    kind: Deployment
+  - group: 'apps'
+    kind: ReplicaSet
+  - group: ''
+    kind: Service
+  - group: ''
+    kind: ConfigMap
+  - group: ''
+    kind: Secret
+  - group: ''
+    kind: Pod
+  - group: 'networking.k8s.io'
+    kind: Ingress
+  - group: 'networking.k8s.io'
+    kind: NetworkPolicy
+  - group: 'policy'
+    kind: PodDisruptionBudget
+  - group: 'autoscaling'
+    kind: HorizontalPodAutoscaler
+  - group: 'argoproj.io'
+    kind: Rollout
+  - group: 'argoproj.io'
+    kind: AnalysisTemplate
+  - group: 'argoproj.io'
+    kind: AnalysisRun
+  
+  # RBAC Policies
+  roles:
+  # Developer role - can sync dev applications
+  - name: developer
+    description: "Developer access to dev environment"
+    policies:
+    - p, proj:microservices:developer, applications, get, microservices/*, allow
+    - p, proj:microservices:developer, applications, sync, microservices/*-dev, allow
+    - p, proj:microservices:developer, applications, action/*, microservices/*-dev, allow
+    - p, proj:microservices:developer, repositories, get, *, allow
+    groups:
+    - your-org:developers
+    - backend
+    - frontend
+  
+  # Platform engineer role - can manage staging and prod
+  - name: platform-engineer
+    description: "Platform engineer access to all environments"
+    policies:
+    - p, proj:microservices:platform-engineer, applications, *, microservices/*, allow
+    - p, proj:microservices:platform-engineer, repositories, *, *, allow
+    - p, proj:microservices:platform-engineer, clusters, get, *, allow
+    groups:
+    - your-org:platform-team
+    - platform
+  
+  # SRE role - read-only access with emergency sync capabilities
+  - name: sre
+    description: "SRE access for monitoring and emergency response"
+    policies:
+    - p, proj:microservices:sre, applications, get, microservices/*, allow
+    - p, proj:microservices:sre, applications, sync, microservices/*-prod, allow
+    - p, proj:microservices:sre, applications, action/rollback, microservices/*-prod, allow
+    - p, proj:microservices:sre, repositories, get, *, allow
+    groups:
+    - your-org:sre-team
+    - sre-team
+  
+  # Service owner role - can manage their own service
+  - name: service-owner
+    description: "Service owners can manage their specific services"
+    policies:
+    - p, proj:microservices:service-owner, applications, get, microservices/{{.Values.serviceName}}-*, allow
+    - p, proj:microservices:service-owner, applications, sync, microservices/{{.Values.serviceName}}-dev, allow
+    - p, proj:microservices:service-owner, applications, sync, microservices/{{.Values.serviceName}}-staging, allow
+    - p, proj:microservices:service-owner, applications, action/*, microservices/{{.Values.serviceName}}-*, allow
+    groups: []
+  
+  # Sync windows for controlled deployments
+  syncWindows:
+  - kind: allow
+    schedule: '* * * * *'
+    duration: 24h
+    applications:
+    - '*-dev'
+    namespaces:
+    - dev
+  - kind: allow
+    schedule: '0 9-17 * * 1-5'  # Business hours, weekdays
+    duration: 8h
+    applications:
+    - '*-staging'
+    namespaces:
+    - staging
+  - kind: deny
+    schedule: '0 17 * * 5'  # Friday evening freeze
+    duration: 60h
+    applications:
+    - '*-prod'
+    namespaces:
+    - prod
+  - kind: allow
+    schedule: '0 9-17 * * 1-4'  # Business hours, Mon-Thu
+    duration: 8h
+    applications:
+    - '*-prod'
+    namespaces:
+    - prod
+    manualSync: true
+
+---
+# RBAC for Port integration
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: argocd
+  name: port-argocd-manager
+rules:
+- apiGroups: ["argoproj.io"]
+  resources: ["applications", "appprojects"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["get", "list"]
+  resourceNames: ["argocd-secret"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: port-argocd-manager
+  namespace: argocd
+subjects:
+- kind: ServiceAccount
+  name: port-gitops-controller
+  namespace: port-system
+roleRef:
+  kind: Role
+  name: port-argocd-manager
+  apiGroup: rbac.authorization.k8s.io

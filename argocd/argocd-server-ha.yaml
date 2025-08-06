@@ -1,0 +1,107 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-server-config
+  namespace: argocd
+  labels:
+    app.kubernetes.io/component: server
+    app.kubernetes.io/name: argocd-server
+    app.kubernetes.io/part-of: argocd
+data:
+  # ArgoCD Server URL Configuration
+  url: "http://argo.annkinimbom.com"
+  
+  # High Availability Configuration
+  server.insecure: "true"
+  server.enable.grpc.web: "true"
+  server.rootpath: "/"
+  
+  # Repository server configuration for HA
+  reposerver.parallelism.limit: "10"
+  
+  # OIDC configuration (example - update with your provider)
+  oidc.config: |
+    name: OIDC
+    issuer: https://your-oidc-provider.com
+    clientId: argocd
+    clientSecret: $oidc.clientSecret
+    requestedScopes: ["openid", "profile", "email", "groups"]
+    requestedIDTokenClaims: {"groups": {"essential": true}}
+    # Add your ArgoCD URL for proper OIDC redirects
+    redirectURI: "http://argo.annkinimbom.com/auth/callback"
+  
+  # Dex configuration for SSO
+  dex.config: |
+    issuer: "http://argo.annkinimbom.com/api/dex"
+    storage:
+      type: memory
+    web:
+      http: 0.0.0.0:5556
+    connectors:
+    - type: github
+      id: github
+      name: GitHub
+      config:
+        clientID: $github.clientId
+        clientSecret: $github.clientSecret
+        redirectURI: "http://argo.annkinimbom.com/api/dex/callback"
+        orgs:
+        - name: your-org
+          teams:
+          - devops-team
+    
+  # Application instance label key
+  application.instanceLabelKey: argocd.argoproj.io/instance
+  
+  # Resource customizations
+  resource.customizations.health.argoproj.io_Rollout: |
+    hs = {}
+    if obj.status ~= nil then
+      if obj.status.replicas ~= nil and obj.status.updatedReplicas ~= nil and obj.status.readyReplicas ~= nil and obj.status.availableReplicas ~= nil then
+        if obj.status.updatedReplicas == obj.status.replicas and obj.status.readyReplicas == obj.status.availableReplicas then
+          hs.status = "Healthy"
+          hs.message = "Rollout is healthy"
+        else
+          hs.status = "Progressing"
+          hs.message = "Rollout is progressing"
+        end
+      end
+    end
+    return hs
+  
+  # Port.io webhook configuration - Multiple endpoints
+  # Custom GitOps Controller webhook
+  webhook.port.gitops: "http://port-gitops-controller.port-system.svc.cluster.local:8080/webhooks/argocd"
+  
+  # Port.io Ocean ArgoCD Integration webhook  
+  webhook.port.ocean: "http://argocd-ocean.port-ocean-argocd.svc.cluster.local:8000/webhooks/argocd"
+  
+  # Port.io annotation tracking
+  application.resourceTrackingMethod: "annotation"
+  
+  # Enhanced status badges for Port.io integration
+  statusbadge.enabled: "true"
+  
+  # Additional ArgoCD settings for Port.io
+  server.enable.proxy.extension: "true"
+  
+  # Notification configuration for Port.io webhooks
+  service.webhook.port-gitops: |
+    url: http://port-gitops-controller.port-system.svc.cluster.local:8080/webhooks/argocd
+    headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-Port-Integration
+      value: gitops-controller
+  
+  service.webhook.port-ocean: |
+    url: http://argocd-ocean.port-ocean-argocd.svc.cluster.local:8000/webhooks/argocd
+    headers:
+    - name: Content-Type
+      value: application/json
+    - name: X-Port-Integration
+      value: ocean-argocd
+  
+  # Enable webhooks for multiple integrations
+  webhook.github.secret: "github-webhook-secret"
+  server.enable.webhook: "true"

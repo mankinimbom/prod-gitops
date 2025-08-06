@@ -1,0 +1,339 @@
+---
+# Automated Rollback Configuration for ArgoCD
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rollback-automation-config
+  namespace: argocd
+  labels:
+    component: rollback-automation
+data:
+  config.yaml: |
+    # Rollback automation settings
+    health_check:
+      timeout: 300  # 5 minutes
+      interval: 30   # 30 seconds
+      retries: 3
+    
+    metrics:
+      prometheus_url: "http://prometheus.monitoring.svc.cluster.local:9090"
+      
+    rollback_triggers:
+      # Application health degradation
+      - name: app_health_degraded
+        condition: "argocd_app_info{health_status!='Healthy'} > 0"
+        duration: "5m"
+        action: "rollback"
+        
+      # High error rate
+      - name: high_error_rate
+        condition: "rate(http_requests_total{code=~'5..'}[5m]) / rate(http_requests_total[5m]) > 0.1"
+        duration: "3m"
+        action: "rollback"
+        
+      # Memory usage spike
+      - name: memory_spike
+        condition: "container_memory_usage_bytes / container_spec_memory_limit_bytes > 0.9"
+        duration: "2m"
+        action: "rollback"
+        
+      # CPU usage spike
+      - name: cpu_spike
+        condition: "rate(container_cpu_usage_seconds_total[5m]) / (container_spec_cpu_quota / container_spec_cpu_period) > 0.9"
+        duration: "2m"
+        action: "rollback"
+
+---
+# Rollback Automation Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rollback-automation
+  namespace: argocd
+  labels:
+    app: rollback-automation
+    component: automation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rollback-automation
+  template:
+    metadata:
+      labels:
+        app: rollback-automation
+        component: automation
+    spec:
+      serviceAccountName: rollback-automation
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: rollback-automation
+        image: alpine/curl:latest  # Replace with custom rollback automation image
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -e
+          echo "Starting rollback automation service..."
+          
+          while true; do
+            echo "Checking application health and metrics..."
+            
+            # Check ArgoCD application health
+            UNHEALTHY_APPS=$(curl -s http://argocd-server.argocd.svc.cluster.local/api/v1/applications | \
+              jq -r '.items[] | select(.status.health.status != "Healthy") | .metadata.name')
+            
+            if [ ! -z "$UNHEALTHY_APPS" ]; then
+              echo "Unhealthy applications detected: $UNHEALTHY_APPS"
+              
+              for app in $UNHEALTHY_APPS; do
+                # Get current revision
+                CURRENT_REV=$(curl -s "http://argocd-server.argocd.svc.cluster.local/api/v1/applications/$app" | \
+                  jq -r '.status.sync.revision')
+                
+                # Get previous successful revision
+                PREV_REV=$(curl -s "http://argocd-server.argocd.svc.cluster.local/api/v1/applications/$app/revisions/$CURRENT_REV" | \
+                  jq -r '.history[] | select(.deployedAt != null) | .revision' | head -2 | tail -1)
+                
+                if [ ! -z "$PREV_REV" ] && [ "$PREV_REV" != "$CURRENT_REV" ]; then
+                  echo "Rolling back $app from $CURRENT_REV to $PREV_REV"
+                  
+                  # Initiate rollback
+                  curl -X POST \
+                    -H "Content-Type: application/json" \
+                    -d "{\"revision\":\"$PREV_REV\"}" \
+                    "http://argocd-server.argocd.svc.cluster.local/api/v1/applications/$app/rollback"
+                  
+                  # Send notification
+                  curl -X POST $WEBHOOK_URL \
+                    -H 'Content-Type: application/json' \
+                    -d "{\"text\":\"🔄 Auto-rollback initiated for $app: $CURRENT_REV → $PREV_REV\"}" || true
+                fi
+              done
+            fi
+            
+            # Wait before next check
+            sleep 60
+          done
+        env:
+        - name: WEBHOOK_URL
+          valueFrom:
+            secretKeyRef:
+              name: notification-webhook
+              key: url
+              optional: true
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: tmp
+        emptyDir: {}
+
+---
+# Rollback Automation Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rollback-automation
+  namespace: argocd
+  labels:
+    component: rollback-automation
+
+---
+# Rollback Automation Role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  namespace: argocd
+  name: rollback-automation
+  labels:
+    component: rollback-automation
+rules:
+- apiGroups: ["argoproj.io"]
+  resources: ["applications"]
+  verbs: ["get", "list", "patch", "update"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create"]
+
+---
+# Rollback Automation RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rollback-automation
+  namespace: argocd
+  labels:
+    component: rollback-automation
+subjects:
+- kind: ServiceAccount
+  name: rollback-automation
+  namespace: argocd
+roleRef:
+  kind: Role
+  name: rollback-automation
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# Prometheus Alert Rules for Rollback Triggers
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rollback-alert-rules
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+data:
+  rollback.rules.yaml: |
+    groups:
+    - name: automated-rollback.rules
+      rules:
+      # Trigger rollback on application health degradation
+      - alert: ApplicationHealthDegraded
+        expr: argocd_app_info{health_status!="Healthy"} > 0
+        for: 5m
+        labels:
+          severity: critical
+          action: rollback
+        annotations:
+          summary: "Application {{ $labels.name }} health degraded"
+          description: "Application {{ $labels.name }} has been unhealthy for 5 minutes"
+          
+      # Trigger rollback on high error rate
+      - alert: HighErrorRate
+        expr: |
+          (
+            rate(http_requests_total{code=~"5.."}[5m]) / 
+            rate(http_requests_total[5m])
+          ) > 0.1
+        for: 3m
+        labels:
+          severity: critical
+          action: rollback
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} for 3 minutes"
+          
+      # Trigger rollback on memory spike
+      - alert: MemoryUsageSpike
+        expr: |
+          (
+            container_memory_usage_bytes{namespace="prod"} / 
+            container_spec_memory_limit_bytes{namespace="prod"}
+          ) > 0.9
+        for: 2m
+        labels:
+          severity: warning
+          action: rollback
+        annotations:
+          summary: "Memory usage spike detected"
+          description: "Memory usage is {{ $value | humanizePercentage }} of limit"
+          
+      # Trigger rollback on deployment failure
+      - alert: DeploymentFailed
+        expr: |
+          kube_deployment_status_replicas_unavailable{namespace="prod"} > 0
+        for: 5m
+        labels:
+          severity: critical
+          action: rollback
+        annotations:
+          summary: "Deployment {{ $labels.deployment }} has unavailable replicas"
+          description: "{{ $value }} replicas are unavailable for 5 minutes"
+
+---
+# Webhook Receiver for Rollback Triggers
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rollback-webhook-receiver
+  namespace: argocd
+  labels:
+    app: rollback-webhook-receiver
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rollback-webhook-receiver
+  template:
+    metadata:
+      labels:
+        app: rollback-webhook-receiver
+    spec:
+      serviceAccountName: rollback-automation
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: webhook-receiver
+        image: nginx:1.25-alpine  # Replace with webhook receiver image
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+        ports:
+        - name: http
+          containerPort: 8080
+        resources:
+          requests:
+            cpu: 100m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: var-cache
+          mountPath: /var/cache/nginx
+        - name: var-run
+          mountPath: /var/run
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: var-cache
+        emptyDir: {}
+      - name: var-run
+        emptyDir: {}
+
+---
+# Service for Webhook Receiver
+apiVersion: v1
+kind: Service
+metadata:
+  name: rollback-webhook-receiver
+  namespace: argocd
+  labels:
+    app: rollback-webhook-receiver
+spec:
+  selector:
+    app: rollback-webhook-receiver
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  type: ClusterIP

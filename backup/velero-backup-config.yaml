@@ -1,0 +1,151 @@
+# Velero Backup Configuration for GitOps
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: velero-backup-config
+  namespace: velero
+data:
+  backup-schedule.yaml: |
+    apiVersion: velero.io/v1
+    kind: Schedule
+    metadata:
+      name: prod-daily-backup
+      namespace: velero
+    spec:
+      schedule: "0 2 * * *"  # Daily at 2 AM
+      template:
+        includedNamespaces:
+        - prod
+        - argocd
+        - monitoring
+        - ingress-nginx
+        excludedResources:
+        - events
+        - events.events.k8s.io
+        - backups.velero.io
+        - restores.velero.io
+        storageLocation: default
+        volumeSnapshotLocations:
+        - default
+        ttl: 720h0m0s  # 30 days retention
+        hooks:
+          resources:
+          - name: backup-hook-postgres
+            includedNamespaces:
+            - prod
+            labelSelector:
+              matchLabels:
+                app: postgresql
+            pre:
+            - exec:
+                container: postgresql
+                command:
+                - /bin/bash
+                - -c
+                - "pg_dump -U $POSTGRES_USER -h localhost $POSTGRES_DB > /tmp/backup.sql"
+            post:
+            - exec:
+                container: postgresql
+                command:
+                - /bin/bash
+                - -c
+                - "rm -f /tmp/backup.sql"
+
+---
+# ArgoCD Backup Configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-backup-script
+  namespace: argocd
+data:
+  backup.sh: |
+    #!/bin/bash
+    set -e
+    
+    BACKUP_DIR="/tmp/argocd-backup-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p $BACKUP_DIR
+    
+    # Backup ArgoCD Applications
+    kubectl get applications -n argocd -o yaml > $BACKUP_DIR/applications.yaml
+    
+    # Backup ArgoCD Projects
+    kubectl get appprojects -n argocd -o yaml > $BACKUP_DIR/projects.yaml
+    
+    # Backup ArgoCD Repositories
+    argocd repo list --output yaml > $BACKUP_DIR/repositories.yaml
+    
+    # Backup ArgoCD Settings
+    kubectl get configmap argocd-server-config -n argocd -o yaml > $BACKUP_DIR/server-config.yaml
+    kubectl get configmap argocd-rbac-cm -n argocd -o yaml > $BACKUP_DIR/rbac-config.yaml
+    
+    # Compress backup
+    tar -czf /backup/argocd-backup-$(date +%Y%m%d-%H%M%S).tar.gz -C /tmp $(basename $BACKUP_DIR)
+    
+    # Upload to S3 (optional)
+    if [ ! -z "$AWS_S3_BUCKET" ]; then
+        aws s3 cp /backup/argocd-backup-$(date +%Y%m%d-%H%M%S).tar.gz s3://$AWS_S3_BUCKET/argocd-backups/
+    fi
+    
+    # Cleanup local backup
+    rm -rf $BACKUP_DIR
+
+---
+# Disaster Recovery Runbook
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: disaster-recovery-runbook
+  namespace: argocd
+data:
+  runbook.md: |
+    # Disaster Recovery Runbook
+    
+    ## ArgoCD Recovery
+    
+    ### 1. Restore from Velero Backup
+    ```bash
+    # List available backups
+    velero backup get
+    
+    # Restore specific backup
+    velero restore create --from-backup <backup-name>
+    
+    # Check restore status
+    velero restore get
+    ```
+    
+    ### 2. Manual ArgoCD Recovery
+    ```bash
+    # Install ArgoCD
+    kubectl create namespace argocd
+    kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+    
+    # Restore configurations
+    kubectl apply -f /backup/server-config.yaml
+    kubectl apply -f /backup/rbac-config.yaml
+    kubectl apply -f /backup/projects.yaml
+    kubectl apply -f /backup/applications.yaml
+    
+    # Restart ArgoCD components
+    kubectl rollout restart deployment/argocd-server -n argocd
+    kubectl rollout restart deployment/argocd-application-controller -n argocd
+    ```
+    
+    ### 3. Application Recovery
+    ```bash
+    # Force sync all applications
+    argocd app sync --all
+    
+    # Check application health
+    argocd app list
+    ```
+    
+    ## RTO/RPO Targets
+    - RTO: 4 hours
+    - RPO: 24 hours
+    
+    ## Emergency Contacts
+    - DevOps Team: devops@company.com
+    - Platform Team: platform@company.com

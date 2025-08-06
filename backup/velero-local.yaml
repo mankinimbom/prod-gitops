@@ -1,0 +1,228 @@
+---
+# Local Velero Configuration for File System Backups
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: velero
+  labels:
+    name: velero
+
+---
+# Local Storage Configuration
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: velero-local-storage
+  labels:
+    type: local
+    app: velero
+spec:
+  storageClassName: manual
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: "/var/velero-backups"  # Local backup directory
+  persistentVolumeReclaimPolicy: Retain
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: velero-local-storage
+  namespace: velero
+spec:
+  storageClassName: manual
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# Velero Configuration for Local File System
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: velero-local-config
+  namespace: velero
+data:
+  # Local backup configuration
+  backup-location.yaml: |
+    apiVersion: velero.io/v1
+    kind: BackupStorageLocation
+    metadata:
+      name: local-filesystem
+      namespace: velero
+    spec:
+      provider: file
+      objectStorage:
+        bucket: velero-backups
+        prefix: cluster-backups
+      config:
+        path: /var/velero-backups
+
+---
+# Local Backup Schedules
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-backup-schedules
+  namespace: velero
+data:
+  daily-backup.yaml: |
+    apiVersion: velero.io/v1
+    kind: Schedule
+    metadata:
+      name: local-daily-backup
+      namespace: velero
+    spec:
+      schedule: "0 2 * * *"  # Daily at 2 AM
+      template:
+        includedNamespaces:
+        - prod
+        - argocd
+        - monitoring
+        
+        excludedResources:
+        - events
+        - events.events.k8s.io
+        - backups.velero.io
+        - restores.velero.io
+        
+        storageLocation: local-filesystem
+        ttl: 168h0m0s  # 7 days retention for local
+        
+        hooks:
+          resources:
+          # Local database backup hook
+          - name: local-db-backup
+            includedNamespaces:
+            - prod
+            labelSelector:
+              matchLabels:
+                app: database
+            pre:
+            - exec:
+                container: database
+                command:
+                - /bin/bash
+                - -c
+                - |
+                  mkdir -p /backup
+                  pg_dump -U $POSTGRES_USER $POSTGRES_DB > /backup/db-$(date +%Y%m%d-%H%M%S).sql
+                  echo "Local database backup created"
+            post:
+            - exec:
+                container: database
+                command:
+                - /bin/bash
+                - -c
+                - |
+                  find /backup -name "*.sql" -mtime +7 -delete
+                  echo "Old backups cleaned up"
+
+---
+# Local Velero Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: velero-local
+  namespace: velero
+  labels:
+    app: velero
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: velero
+  template:
+    metadata:
+      labels:
+        app: velero
+    spec:
+      serviceAccountName: velero
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: velero
+        image: velero/velero:v1.12.1
+        command:
+        - /velero
+        args:
+        - server
+        - --log-level=info
+        - --backup-storage-location=local-filesystem
+        - --features=EnableCSI
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+        env:
+        - name: VELERO_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+        volumeMounts:
+        - name: velero-storage
+          mountPath: /var/velero-backups
+        - name: tmp
+          mountPath: /tmp
+        - name: cache
+          mountPath: /.cache
+      volumes:
+      - name: velero-storage
+        persistentVolumeClaim:
+          claimName: velero-local-storage
+      - name: tmp
+        emptyDir: {}
+      - name: cache
+        emptyDir: {}
+
+---
+# Velero Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: velero
+  namespace: velero
+
+---
+# Velero ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: velero
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+
+---
+# Velero ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: velero
+subjects:
+- kind: ServiceAccount
+  name: velero
+  namespace: velero
+roleRef:
+  kind: ClusterRole
+  name: velero
+  apiGroup: rbac.authorization.k8s.io

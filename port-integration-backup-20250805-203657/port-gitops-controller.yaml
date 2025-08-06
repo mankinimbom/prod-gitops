@@ -1,0 +1,299 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: port-gitops-controller
+  namespace: port-system
+  labels:
+    app: port-gitops-controller
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: port-gitops-controller
+  template:
+    metadata:
+      labels:
+        app: port-gitops-controller
+    spec:
+      serviceAccountName: port-gitops-controller
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: controller
+        image: port-gitops-controller:v1.0.0  # Build this from the source below
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        - name: PORT_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: port-credentials
+              key: client-id
+        - name: PORT_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: port-credentials
+              key: client-secret
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: github-credentials
+              key: token
+        - name: ARGOCD_SERVER
+          value: "argo.annkinimbom.com"
+        - name: ARGOCD_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: argocd-credentials
+              key: token
+        - name: GIT_REPO_URL
+          value: "https://github.com/your-org/gitops-manifests.git"
+        - name: GIT_REPO_BRANCH
+          value: "main"
+        - name: LOG_LEVEL
+          value: "info"
+        resources:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+            ephemeral-storage: 1Gi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+            ephemeral-storage: 2Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: git-cache
+          mountPath: /git-cache
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: tmp
+        emptyDir:
+          sizeLimit: 1Gi
+      - name: git-cache
+        emptyDir:
+          sizeLimit: 2Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: port-gitops-controller
+  namespace: port-system
+  labels:
+    app: port-gitops-controller
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: port-gitops-controller
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: port-gitops-controller
+  namespace: port-system
+  labels:
+    app: port-gitops-controller
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: port-gitops-controller
+rules:
+# Read ArgoCD applications and app projects
+- apiGroups: ["argoproj.io"]
+  resources: ["applications", "appprojects", "applicationsets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+# Read deployment status for monitoring
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch"]
+# Read pods for health status
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps"]
+  verbs: ["get", "list", "watch"]
+# Read ingress for external URLs
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: port-gitops-controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: port-gitops-controller
+subjects:
+- kind: ServiceAccount
+  name: port-gitops-controller
+  namespace: port-system
+
+---
+# Port credentials secret (to be created manually)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: port-credentials
+  namespace: port-system
+type: Opaque
+stringData:
+  client-id: "YOUR_PORT_CLIENT_ID"
+  client-secret: "YOUR_PORT_CLIENT_SECRET"
+
+---
+# GitHub credentials secret (to be created manually)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-credentials
+  namespace: port-system
+type: Opaque
+stringData:
+  token: "YOUR_GITHUB_PAT_TOKEN"
+
+---
+# ArgoCD credentials secret (to be created manually)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: argocd-credentials
+  namespace: port-system
+type: Opaque
+stringData:
+  token: "YOUR_ARGOCD_AUTH_TOKEN"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: port-exporter
+  namespace: port-system
+  labels:
+    app: port-exporter
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: port-exporter
+  template:
+    metadata:
+      labels:
+        app: port-exporter
+    spec:
+      serviceAccountName: port-exporter
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: exporter
+        image: port-labs/port-k8s-exporter:latest
+        env:
+        - name: PORT_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: port-credentials
+              key: client-id
+        - name: PORT_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: port-credentials
+              key: client-secret
+        - name: CLUSTER_NAME
+          value: "production"
+        - name: UPDATE_INTERVAL
+          value: "30"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 128Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: port-exporter
+  namespace: port-system
+  labels:
+    app: port-exporter
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: port-exporter
+rules:
+# Read ArgoCD resources
+- apiGroups: ["argoproj.io"]
+  resources: ["applications", "appprojects"]
+  verbs: ["get", "list", "watch"]
+# Read k8s resources
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["pods", "services", "configmaps", "secrets", "namespaces"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: ["networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: port-exporter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: port-exporter
+subjects:
+- kind: ServiceAccount
+  name: port-exporter
+  namespace: port-system

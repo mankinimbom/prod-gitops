@@ -15,29 +15,31 @@ data:
         - name: backend
           image: ghcr.io/mankinimbom/backend
           platforms: linux/amd64
-          tag: "1.0.0"
           update-strategy: semver
-          semver-constraint: "~1.0"
-          allow-tags: ^v[0-9]+\.[0-9]+\.[0-9]+$
+          semver-constraint: ">=1.0.0 <2.0.0"
+          allow-tags: ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$
+          ignore-tags: ^.*-(rc|alpha|beta).*$
       write-back-method: git
-      git-branch: main
-      git-commit-user: argocd-image-updater
-      git-commit-email: argocd-image-updater@example.com
-      git-commit-message: "chore: update backend image to {{.NewTag}}"
+      git-branch: image-updates
+      git-commit-user: argocd-image-updater[bot]
+      git-commit-email: argocd-image-updater@noreply.github.com
+      git-commit-message: "chore(backend): update image to {{.NewTag}} [skip ci]"
+      git-commit-sign-off: true
     - name: prod-frontend
       image-list:
         - name: frontend
           image: ghcr.io/mankinimbom/frontend
           platforms: linux/amd64
-          tag: "1.0.0"
           update-strategy: semver
-          semver-constraint: "~1.0"
-          allow-tags: ^v[0-9]+\.[0-9]+\.[0-9]+$
+          semver-constraint: ">=1.0.0 <2.0.0"
+          allow-tags: ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?$
+          ignore-tags: ^.*-(rc|alpha|beta).*$
       write-back-method: git
-      git-branch: main
-      git-commit-user: argocd-image-updater
-      git-commit-email: argocd-image-updater@example.com
-      git-commit-message: "chore: update frontend image to {{.NewTag}}"
+      git-branch: image-updates
+      git-commit-user: argocd-image-updater[bot]
+      git-commit-email: argocd-image-updater@noreply.github.com
+      git-commit-message: "chore(frontend): update image to {{.NewTag}} [skip ci]"
+      git-commit-sign-off: true
   registries.conf: |
     registries:
     - name: GitHub Container Registry
