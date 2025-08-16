@@ -1,0 +1,45 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: microservices-multi-env
+  namespace: argocd
+spec:
+  generators:
+  - matrix:
+      generators:
+      - git:
+          repoURL: https://github.com/mankinimbom/prod-gitops.git
+          revision: HEAD
+          directories:
+          - path: apps/*
+      - list:
+          elements:
+          - env: dev
+            namespace: dev
+            server: https://kubernetes.default.svc
+          - env: staging  
+            namespace: staging
+            server: https://kubernetes.default.svc
+          - env: prod
+            namespace: prod
+            server: https://kubernetes.default.svc
+  template:
+    metadata:
+      name: '{{path.basename}}-{{env}}'
+      labels:
+        environment: '{{env}}'
+    spec:
+      project: prod
+      source:
+        repoURL: https://github.com/mankinimbom/prod-gitops.git
+        targetRevision: HEAD
+        path: '{{path}}/overlays/{{env}}'
+      destination:
+        server: '{{server}}'
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - CreateNamespace=true
